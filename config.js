@@ -26,9 +26,10 @@ const DEFAULTS = Object.freeze({
   OPENROUTER_API_URL: 'https://openrouter.ai/api/v1/chat/completions',
   OPENROUTER_WEB_ENABLED: false, // web plugin is billed per search; off = much cheaper
 
-  // Gemini
+  // Gemini (`GEMINI_API_KEY` accepts comma/newline separated backup keys)
   GEMINI_API_KEY: '',
   GEMINI_MODEL: 'gemini-3.8-flash',
+  GEMINI_KEY_COOLDOWN: 180,
 
   // Ollama
   OLLAMA_URL: 'http://127.0.0.1:11434',

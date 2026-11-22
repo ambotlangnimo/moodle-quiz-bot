@@ -12,6 +12,8 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; align-items: center; }
 .row label { min-width: 180px; font-size: 12px; color: #94a3b8; }
 .row input[type="text"], .row input[type="number"], .row select { background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 4px 8px; color: #e0e0e0; font-size: 12px; flex: 1; min-width: 120px; }
+.row textarea { background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 4px 8px; color: #e0e0e0; font-size: 12px; flex: 1; min-width: 220px; font-family: inherit; resize: vertical; }
+.row .hint { font-size: 11px; color: #64748b; }
 .row input[type="checkbox"] { accent-color: #e94560; }
 .btn { background: #e94560; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
 .btn:hover { background: #d63851; }
@@ -20,6 +22,21 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 #status.error { display: block; background: #7f1d1d; color: #fca5a5; }
 .save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
 #save-status { font-size: 13px; font-weight: 600; min-height: 16px; }
+
+/* Extension update section */
+#extVersion { font-size: 12px; color: #e0e0e0; font-weight: 600; }
+#downloadUpdateBtn {
+  background: #16a34a;
+  display: none;
+  text-decoration: none;
+  text-align: center;
+}
+#downloadUpdateBtn.show { display: inline-block; }
+#downloadUpdateBtn:hover { background: #15803d; }
+#updateStatus { margin-top: 8px; font-size: 12px; color: #94a3b8; }
+#updateStatus.ok { color: #4ade80; }
+#updateStatus.warn { color: #fbbf24; }
+#updateStatus.error { color: #f87171; }
 
 /* Floating toast — always visible at the user's scroll position. */
 #toast {
@@ -44,6 +61,21 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 </head>
 <body>
 <h1>Moodle Quiz Bot Config</h1>
+
+<div class="section" id="updateSection">
+  <h2>Extension Update</h2>
+  <div class="row">
+    <label>Installed version</label>
+    <span id="extVersion" aria-live="polite">Installed: v—</span>
+    <span class="hint">Checked against GitHub every 6 hours in the background.</span>
+  </div>
+  <div class="row">
+    <button class="btn" id="checkUpdateBtn">Check for Updates</button>
+    <a class="btn" id="downloadUpdateBtn" href="https://github.com/ambotlangnimo/moodle-quiz-bot/archive/refs/heads/main.zip" target="_blank" rel="noopener">Download Update ZIP</a>
+  </div>
+  <div id="updateStatus" aria-live="polite">Checking GitHub…</div>
+</div>
+
 <div class="section">
 <h2>FreeLLMAPI / Custom OpenAI-Compatible Endpoint</h2>
 <div class="row"><label>API Base URL</label><input type="text" id="CUSTOM_API_BASE_URL" value="https://api.freellmapi.com/v1" placeholder="https://api.freellmapi.com/v1"></div>
@@ -53,7 +85,9 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 
 <div class="section">
 <h2>Gemini (Free AI Fallback)</h2>
-<div class="row"><label>API Key</label><input type="password" id="GEMINI_API_KEY" placeholder="Optional Gemini API key"></div>
+<div class="row"><label>API Keys</label><textarea id="GEMINI_API_KEY" rows="3" placeholder="One key per line, or comma-separated: key1, key2, key3"></textarea></div>
+<div class="row"><label>Key cooldown (s)</label><input type="number" id="GEMINI_KEY_COOLDOWN" value="180"></div>
+<div class="row"><span class="hint">Backup keys are rotated automatically: when one returns HTTP 429 / quota, the next ready key answers instead.</span></div>
 <div class="row"><label>Model</label><input type="text" id="GEMINI_MODEL" value="gemini-3.8-flash" readonly></div>
 </div>
 

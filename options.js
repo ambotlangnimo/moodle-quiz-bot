@@ -29,7 +29,7 @@ function saveSettings(values) {
 
 const FIELD_MAP = [
   'CUSTOM_API_BASE_URL', 'CUSTOM_API_KEY', 'CUSTOM_MODEL',
-  'GEMINI_API_KEY', 'GEMINI_MODEL', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_VISION_MODEL',
+  'GEMINI_API_KEY', 'GEMINI_MODEL', 'GEMINI_KEY_COOLDOWN', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_VISION_MODEL',
   'OLLAMA_URL', 'OLLAMA_MODEL', 'OLLAMA_VISION_MODEL', 'OLLAMA_NUM_CTX',
   'AUTO_SUBMIT', 'AUTO_CLICK_NEXT', 'AUTO_REATTEMPT', 'SCAN_INTERVAL',
   'ANSWER_KEY_ENABLED', 'WEB_SEARCH_ENABLED', 'SHORT_ANSWER_ENABLED',
@@ -38,6 +38,21 @@ const FIELD_MAP = [
 ];
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Extension update banner: version label + "Check for Updates" + 1-click ZIP.
+  // Wired before the storage awaits so the section is usable immediately.
+  renderVersionLabel(installedVersion());
+  const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+  if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', () => { checkForUpdates(true); });
+  const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
+  if (downloadUpdateBtn) {
+    downloadUpdateBtn.href = UPDATE_ZIP_URL;
+    downloadUpdateBtn.addEventListener('click', () => {
+      showUpdateStatus('ZIP download started — extract it over your extension folder, then click Reload in brave://extensions.', 'ok');
+    });
+  }
+  // Cheap automatic check: the background answers from its 6-hour cache unless forced.
+  checkForUpdates(false);
+
   const settings = await loadSettings();
   await refreshAnswerBankCount();
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -183,6 +198,71 @@ function showSyncStatus(message, isError = false) {
   setTimeout(() => { el.textContent = ''; }, 5000);
 }
 
+// ── Extension update checker (1-click ZIP download) ─────────────────────────
+const UPDATE_ZIP_URL = 'https://github.com/ambotlangnimo/moodle-quiz-bot/archive/refs/heads/main.zip';
+
+function installedVersion() {
+  try { return chrome.runtime.getManifest().version || '0.0.0'; } catch (error) { return '0.0.0'; }
+}
+
+// Ask the service worker for the GitHub status. force=true skips its 6-hour cache.
+function requestUpdateCheck(force) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'CHECK_EXTENSION_UPDATE', force: !!force }, (response) => {
+        if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+        else if (!response) resolve({ error: 'Background worker did not answer' });
+        else resolve(response);
+      });
+    } catch (error) {
+      resolve({ error: (error && error.message) || String(error) });
+    }
+  });
+}
+
+function showUpdateStatus(message, tone) {
+  const el = document.getElementById('updateStatus');
+  if (!el) return;
+  el.textContent = message;
+  el.className = tone || '';
+}
+
+function renderVersionLabel(version) {
+  const el = document.getElementById('extVersion');
+  if (el) el.textContent = 'Installed: v' + (version || installedVersion());
+}
+
+async function checkForUpdates(force) {
+  const button = document.getElementById('checkUpdateBtn');
+  const download = document.getElementById('downloadUpdateBtn');
+  if (button) { button.disabled = true; button.textContent = 'Checking…'; }
+  showUpdateStatus('Checking GitHub for a newer version…', '');
+
+  const result = await requestUpdateCheck(force);
+  if (button) { button.disabled = false; button.textContent = 'Check for Updates'; }
+
+  const current = result.currentVersion || installedVersion();
+  renderVersionLabel(current);
+
+  if (result.error) {
+    showUpdateStatus('Could not check for updates: ' + result.error, 'error');
+    return result;
+  }
+
+  const latest = String(result.latestVersion || current).replace(/^v/i, '');
+  if (result.updateAvailable) {
+    showUpdateStatus('Update available: v' + latest + ' is on GitHub (installed v' + current + ').', 'warn');
+    if (download) {
+      download.href = result.downloadUrl || UPDATE_ZIP_URL;
+      download.classList.add('show');
+    }
+  } else {
+    showUpdateStatus('You are up to date (v' + latest + ').', 'ok');
+    if (download) download.classList.remove('show');
+  }
+  return result;
+}
+
 // Gather the current values of all configurable fields.
 function collectSettings() {
   const values = {};
@@ -235,6 +315,7 @@ function getDefault(key) {
     CUSTOM_MODEL: 'auto',
     GEMINI_API_KEY: '',
     GEMINI_MODEL: 'gemini-3.8-flash',
+    GEMINI_KEY_COOLDOWN: 180,
     OPENROUTER_API_KEY: '', OPENROUTER_MODEL: 'deepseek/deepseek-v4.1-flash', OPENROUTER_VISION_MODEL: '',
     OLLAMA_URL: 'http://127.0.0.1:11434', OLLAMA_MODEL: 'qwen2.5:7b', OLLAMA_VISION_MODEL: '', OLLAMA_NUM_CTX: 16384,
     AUTO_SUBMIT: true, AUTO_CLICK_NEXT: true, AUTO_REATTEMPT: false, SCAN_INTERVAL: 300,

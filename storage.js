@@ -71,14 +71,17 @@ function normalizeAnswerEntry(question, value) {
   for (const rawHit of rawHits) {
     const hit = typeof rawHit === 'string' ? { answer: rawHit } : rawHit;
     if (!hit || typeof hit.answer !== 'string' || !hit.answer.trim()) continue;
-    hits.push({
+    const normalized = {
       question: typeof hit.question === 'string' && hit.question.trim()
         ? hit.question.trim()
         : question,
       answer: hit.answer.trim(),
       course: typeof hit.course === 'string' ? hit.course : 'imported',
       verified: hit.verified === true,
-    });
+    };
+    // Keep an explicit "known wrong" marker so it can be purged on the next write.
+    if (hit.wrong === true) normalized.wrong = true;
+    hits.push(normalized);
   }
   return [timestamp, hits];
 }
@@ -195,9 +198,48 @@ async function answerKeyGet(key) {
   return entry[1]; // hits array
 }
 
+function hitAnswerNorm(hit) {
+  if (!hit || typeof hit !== 'object' || typeof hit.answer !== 'string') return '';
+  return normText(hit.answer);
+}
+
+// Verified answers always outrank unverified ones and conflicting guesses are
+// purged: as soon as a question has a `verified: true` hit, every hit with a
+// different answer is dropped and the verified hit is moved to index 0.
+// Hits flagged `wrong: true` never survive a write.
+function rankHits(hits) {
+  if (!Array.isArray(hits)) return [];
+  const verified = [];
+  const unverified = [];
+  const other = [];
+  const seen = new Set();
+  for (const hit of hits) {
+    if (hit && typeof hit === 'object' && hit.wrong === true) continue;
+    const answerNorm = hitAnswerNorm(hit);
+    if (!answerNorm) { other.push(hit); continue; }
+    if (seen.has(answerNorm)) continue;
+    seen.add(answerNorm);
+    if (hit.verified === true) verified.push(hit);
+    else unverified.push(hit);
+  }
+  if (!verified.length) return unverified.concat(other);
+  const verifiedNorms = verified.map(hitAnswerNorm);
+  const kept = unverified.filter((hit) => {
+    const answerNorm = hitAnswerNorm(hit);
+    // Keep unverified hits that are only a spacing/punctuation variant of a
+    // verified answer; everything else is a conflicting guess and is purged.
+    return verifiedNorms.some((norm) => norm === answerNorm || similarity(answerNorm, norm) >= 0.9);
+  });
+  return verified.concat(kept, other);
+}
+
+// `opts.replaceVerified` is for single-answer keys (one matching statement, one
+// MCQ prompt): a freshly graded verified answer retires older verified hits that
+// now contradict it, so a stale pair can never outrank Moodle's latest result.
 async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   await ensureLoaded();
   const verified = !!(opts && opts.verified);
+  const replaceVerified = !!(opts && opts.replaceVerified);
   if (typeof hits === 'string') {
     const question = key;
     key = normText(question);
@@ -205,6 +247,10 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
     if (!key || !answer) return;
     const answerNorm = normText(answer);
     hits = (_answerKeyMem[key]?.[1] || []).slice();
+    if (verified && replaceVerified) {
+      hits = hits.filter((hit) => !hit || typeof hit !== 'object' ||
+        hit.verified !== true || normText(hit.answer) === answerNorm);
+    }
     const existing = hits.find((hit) => hit && normText(hit.answer) === answerNorm);
     if (existing) {
       if (verified && !existing.verified) existing.verified = true;
@@ -219,6 +265,40 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   }
   key = normText(key);
   if (!key || !Array.isArray(hits) || !hits.length) return;
+
+  // Verified answers are authoritative: purge them out of the wrong cache so a
+  // stale "wrong" record can never outvote what Moodle confirmed on review.
+  const verifiedNorms = [];
+  for (const hit of hits) {
+    if (!hit || typeof hit !== 'object' || hit.verified !== true) continue;
+    const answerNorm = hitAnswerNorm(hit);
+    if (answerNorm && !verifiedNorms.includes(answerNorm)) verifiedNorms.push(answerNorm);
+  }
+  for (const answerNorm of verifiedNorms) await wrongDeleteFuzzy(key, answerNorm);
+
+  // Purge unverified hits that the wrong cache already knows are incorrect, then
+  // force verified hits to index 0 so lookups always see them first.
+  const knownWrong = (await getWrongAnswers(key)).map((item) => normText(item)).filter(Boolean);
+  if (knownWrong.length) {
+    hits = hits.filter((hit) => {
+      if (!hit || typeof hit !== 'object' || hit.verified === true) return true;
+      const answerNorm = hitAnswerNorm(hit);
+      if (!answerNorm) return true;
+      return !knownWrong.some((item) => item === answerNorm || similarity(answerNorm, item) >= 0.9);
+    });
+  }
+  hits = rankHits(hits);
+  if (!hits.length) {
+    // Everything stored for this question was a known-wrong guess: drop the key
+    // instead of keeping a poisoned entry around.
+    if (_answerKeyMem[key]) {
+      delete _answerKeyMem[key];
+      markKey('ak', key, true);
+      scheduleFlush();
+    }
+    return;
+  }
+
   _answerKeyMem[key] = [Date.now() / 1000, hits];
   markKey('ak', key);
   evictAnswerKeys();
@@ -435,9 +515,60 @@ async function seedDefaultBank(force = false) {
   return result;
 }
 
+// ── Superscript / subscript / Moodle image normalization ────────────────────
+//  `cleanDOMToAI` in the reference toolkit turns <sup>/<sub> markup into the
+//  real unicode characters so "2<sup>3</sup>" reads exactly like a typed "2³".
+//  `unscriptDigits()` then folds both forms back to plain digits for matching,
+//  and attempt-specific pluginfile.php URLs collapse into a stable
+//  `[moodle-asset:<filename>]` token, so the same item matches across attempts.
+const SUP_MAP = {
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+  '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ', 'i': 'ⁱ', 'x': 'ˣ', 'y': 'ʸ', 'm': 'ᵐ',
+  'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ',
+};
+const SUB_MAP = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+  '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎', 'a': 'ₐ', 'e': 'ₑ', 'o': 'ₒ', 'x': 'ₓ', 'i': 'ᵢ',
+  'j': 'ⱼ', 'n': 'ₙ', 'p': 'ₚ',
+};
+
+const UNSCRIPT_DIGITS = {
+  '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+  '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
+};
+
+/** Fold unicode superscript/subscript digits (2³, 10₂) back to ASCII digits. */
+function unscriptDigits(str) {
+  if (!str) return '';
+  return String(str).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]/g, (ch) => UNSCRIPT_DIGITS[ch] || ch);
+}
+
+// Moodle rewrites the context/attempt id inside every pluginfile.php URL, so the
+// raw src can never match between attempts — the filename is stable. The path
+// prefix varies (`/pluginfile.php`, `/2612/pluginfile.php`, ...).
+const MOODLE_ASSET_SRC = '(?:https?:\\/\\/[^\\s"\']*?)?\\/pluginfile\\.php\\/\\d+\\/question\\/(?:answer|questiontext|feedback)\\/\\d+(?:\\/\\d+)?\\/([^?#\\s"\']+)';
+const MOODLE_ASSET_RE = new RegExp(MOODLE_ASSET_SRC, 'i');
+// Full URL form: the `?forcedownload=1` / `#...` tail is attempt noise too.
+const MOODLE_ASSET_ANY_RE = new RegExp(MOODLE_ASSET_SRC + '(?:[?#][^\\s"\']*)?', 'gi');
+
+/** Stable `[moodle-asset:<filename>]` token for a Moodle question file URL. */
+function moodleAssetToken(src) {
+  const text = String(src || '');
+  const match = text.match(MOODLE_ASSET_RE);
+  if (!match || !match[1]) return '';
+  let name = match[1];
+  try { name = decodeURIComponent(name); } catch (error) { /* keep the raw name */ }
+  return `[moodle-asset:${name}]`;
+}
+
 // ── Utility: norm_text port ────────────────────────────────────────────────
 function normText(s) {
   s = (s || '').toLowerCase();
+  // Attempt-independent image token (URL or already-written token form).
+  s = s.replace(MOODLE_ASSET_ANY_RE, ' moodle asset $1 ');
+  s = s.replace(/\[\s*moodle\s*-\s*asset\s*:\s*([^\]]+)\]/g, ' moodle asset $1 ');
+  // 2³ / 10₂ must fold to 23 / 102 before non-ASCII characters are stripped.
+  s = unscriptDigits(s);
   s = s.replace(/^(question\s*)?\d+[.)]\s*/, '');
   s = s.replace(/\bselect one\b|\bchoose\.\.\.|\btrue or false\b/g, '');
   s = s.replace(/[_\-]{2,}/g, ' ');

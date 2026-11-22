@@ -16,20 +16,22 @@ Chrome/Brave browser extension. No bundler, no build step, no CDN scripts.
 1. Right-click the extension icon → **Options**
 2. Enter your **OpenRouter API key** (get one free at https://openrouter.ai/keys)
 3. Optionally configure **Ollama** (install from https://ollama.ai, run `ollama pull qwen2.5:7b`, then `ollama serve`)
-4. Toggle features on/off as needed
-5. Click **Save Settings**
+4. Gemini accepts several backup keys (comma/newline separated); a key that hits HTTP 429 / quota is cooled down and the next ready key answers automatically
+5. Toggle features on/off as needed
+6. Click **Save Settings**
 
 ## Usage
 
 1. Log into your Moodle site (the extension injects on `https://amaes.com/*`)
 2. Open a quiz
 3. Opening a course or quiz page starts background harvesting for individual subject/topic words; the HUD reports HTTP status and matched-card counts
-4. The **Harvest** HUD button re-runs harvesting for the current subject
-5. The bot automatically scans for unanswered questions
-6. The HUD panel (bottom-right) shows progress, tier used, and answers
-7. **Stop** button aborts the loop
-8. Each tier is tried in order: Answer Key → Web Search → Gemini → OpenRouter → Ollama
-9. If every tier fails, the bot waits for your manual input (with a 5-minute timeout)
+4. Opening a course or grades page also scans `/grade/report/user/index.php` for completed quizzes, fetches each `review.php?attempt=...&showall=1` page and learns every verified answer / eliminated choice (once per course per 6 hours)
+5. The **Harvest** HUD button re-runs both harvests for the current course
+6. The bot automatically scans for unanswered questions
+7. The HUD panel (bottom-right) shows progress, tier used, and answers
+8. **Stop** button aborts the loop
+9. Each tier is tried in order: Answer Key → Web Search → Gemini → OpenRouter → Ollama
+10. If every tier fails, the bot waits for your manual input (with a 5-minute timeout)
 
 ## Pre-exam Answer Bank
 
@@ -52,7 +54,8 @@ learned from Moodle review pages.
 - **Multi-answer** (checkboxes) — key + AI picks, filtered, scored
 - **Short answer** (text input) — key → web → AI with retry variants
 - **True/False** — judged by AI with bool-specific prompt
-- **Matching** (dropdown selects) — key per statement → AI → elimination
+- **Matching** (dropdown selects) — one key per sub-statement: verified bank pairs fill first, then a single batch AI request resolves every unanswered row, and graded review rows are learned back as verified pairs. Checkmarks/crosses drive iterative elimination and 2-row swap deduction
+- **Math / images** — `<sup>`/`<sub>` markup becomes `2³` / `10₂`, and attempt-specific `pluginfile.php` URLs collapse to a stable `[moodle-asset:file]` token so questions match across attempts
 
 ## Tier Order
 

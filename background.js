@@ -15,6 +15,12 @@ const HARVEST_STOP_WORDS = new Set([
   'a', 'an', 'and', 'of', 'the', 'for', 'in', 'its', 'to', 'with',
   'introduction', 'principles', 'applications', 'fundamentals',
 ]);
+// Gemini API key rotation state. `GEMINI_API_KEY` accepts comma/newline/space
+// separated backup keys; a key that answers HTTP 429 (or a quota 403) is put on
+// cooldown and the next ready key handles the request, so one exhausted free key
+// never takes Gemini out of the fallback chain.
+const _geminiKeyState = new Map(); // key -> { limitedUntil, invalidUntil }
+let _geminiKeyCursor = 0;
 chrome.runtime.onConnect.addListener((port) => {
   ports.add(port);
   port.onDisconnect.addListener(() => ports.delete(port));
@@ -483,6 +489,177 @@ function scoreAnswerKeyHit(hit, options) {
   return score;
 }
 
+/* ── Extension update checker ────────────────────────────────────────────────
+   Friends who load this folder as an unpacked extension get told about newer
+   builds published on GitHub. One plain fetch of the repo's manifest.json, a
+   semantic-version compare against chrome.runtime.getManifest().version, and
+   the answer is cached in storage.local for six hours so a waking service
+   worker can never hammer raw.githubusercontent.com. */
+const UPDATE_REPO_URL = 'https://github.com/ambotlangnimo/moodle-quiz-bot';
+const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/ambotlangnimo/moodle-quiz-bot/main/manifest.json';
+const UPDATE_DOWNLOAD_URL = 'https://github.com/ambotlangnimo/moodle-quiz-bot/archive/refs/heads/main.zip';
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const UPDATE_FETCH_TIMEOUT_MS = 8000;
+const UPDATE_CACHE_KEY = 'EXTENSION_UPDATE_STATUS';
+let _updateCheckInFlight = null;
+
+async function fetchLatestVersionFromGitHub() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${UPDATE_MANIFEST_URL}?t=${Date.now()}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json = JSON.parse(await response.text());
+    const version = String((json && json.version) || '').trim();
+    if (!version) throw new Error('Remote manifest has no version field');
+    return version;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function readUpdateCache() {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(UPDATE_CACHE_KEY, (items) => {
+        if (chrome.runtime.lastError) resolve(null);
+        else resolve((items && items[UPDATE_CACHE_KEY]) || null);
+      });
+    } catch (error) {
+      resolve(null);
+    }
+  });
+}
+
+function writeUpdateCache(value) {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.set({ [UPDATE_CACHE_KEY]: value }, () => {
+        void chrome.runtime.lastError; // storage failures are never fatal here
+        resolve();
+      });
+    } catch (error) {
+      resolve();
+    }
+  });
+}
+
+// Normalised shape handed to content.js / options.js. `error` only appears when
+// the GitHub lookup itself failed, so callers can tell "up to date" from "offline".
+function updateResultFor(result) {
+  const current = result.currentVersion || installedVersion();
+  const latest = String(result.latestVersion || current).replace(/^v/i, '') || current;
+  return {
+    updateAvailable: !!result.updateAvailable,
+    latestVersion: latest,
+    currentVersion: current,
+    downloadUrl: result.downloadUrl || UPDATE_DOWNLOAD_URL,
+    repoUrl: UPDATE_REPO_URL,
+    checkedAt: result.checkedAt || 0,
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
+function broadcastUpdateAvailable(result) {
+  try {
+    chrome.tabs.query({ url: ['https://*.amaes.com/*'] }, (tabs) => {
+      if (chrome.runtime.lastError) return;
+      for (const tab of tabs || []) {
+        if (!tab || tab.id == null) continue;
+        chrome.tabs.sendMessage(tab.id, {
+          type: 'EXTENSION_UPDATE_AVAILABLE',
+          updateAvailable: true,
+          latestVersion: result.latestVersion,
+          currentVersion: result.currentVersion,
+          downloadUrl: result.downloadUrl,
+          repoUrl: result.repoUrl,
+        }, () => { void chrome.runtime.lastError; });
+      }
+    });
+  } catch (error) { /* page closed mid-broadcast: ignore */ }
+}
+
+function installedVersion() {
+  try {
+    return String(chrome.runtime.getManifest().version || '0.0.0').trim();
+  } catch (error) {
+    return '0.0.0';
+  }
+}
+
+// "v3.0.1-beta+7" -> [3, 0, 1]; anything non-numeric counts as 0.
+function versionParts(value) {
+  const clean = String(value || '').trim().replace(/^v/i, '');
+  const core = clean.split(/[+-]/)[0] || '';
+  return core.split('.').map((part) => {
+    const num = parseInt(part.replace(/[^0-9]/g, ''), 10);
+    return Number.isFinite(num) ? num : 0;
+  });
+}
+
+// Semantic comparison: true only when `remote` is strictly newer than `local`.
+function isNewerVersion(remote, local) {
+  const a = versionParts(remote);
+  const b = versionParts(local);
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return false;
+}
+
+async function runExtensionUpdateCheck() {
+  const current = installedVersion();
+  const result = {
+    updateAvailable: false,
+    latestVersion: current,
+    currentVersion: current,
+    downloadUrl: UPDATE_DOWNLOAD_URL,
+    repoUrl: UPDATE_REPO_URL,
+    checkedAt: 0,
+  };
+  try {
+    const latest = await fetchLatestVersionFromGitHub();
+    result.latestVersion = latest.replace(/^v/i, '');
+    result.updateAvailable = isNewerVersion(latest, current);
+    result.checkedAt = Date.now(); // only successful lookups reset the 6-hour window
+  } catch (error) {
+    result.error = (error && error.message) || String(error);
+  }
+  await writeUpdateCache(result);
+  const publicResult = updateResultFor(result);
+  if (publicResult.updateAvailable) broadcastUpdateAvailable(publicResult);
+  return publicResult;
+}
+
+// force = true bypasses the cache ("Check for Updates" in the options page).
+function getExtensionUpdateStatus(force) {
+  if (force) return runExtensionUpdateCheck();
+  if (_updateCheckInFlight) return _updateCheckInFlight;
+  _updateCheckInFlight = (async () => {
+    const cached = await readUpdateCache();
+    if (cached && cached.checkedAt && Date.now() - cached.checkedAt < UPDATE_CHECK_INTERVAL_MS) {
+      return { ...updateResultFor(cached), fromCache: true };
+    }
+    return runExtensionUpdateCheck();
+  })().finally(() => { _updateCheckInFlight = null; });
+  return _updateCheckInFlight;
+}
+
+// One automatic check every 6 hours (the storage cache keeps that window honest
+// when MV3 suspends this worker in between) plus a fresh one on install/startup.
+try {
+  chrome.runtime.onInstalled.addListener(() => { getExtensionUpdateStatus(false).catch(() => {}); });
+  chrome.runtime.onStartup.addListener(() => { getExtensionUpdateStatus(false).catch(() => {}); });
+} catch (error) { /* older runtimes: the CHECK_EXTENSION_UPDATE handler still works */ }
+setInterval(() => { runExtensionUpdateCheck().catch(() => {}); }, UPDATE_CHECK_INTERVAL_MS);
+
 async function handleMessage(message, sender) {
   await configReady;
   const action = message.action || message.type;
@@ -527,38 +704,97 @@ async function handleMessage(message, sender) {
 
     case 'postGemini': {
       const { contents, generationConfig, timeout } = payload;
-      const apiKey = cfg('GEMINI_API_KEY');
-      if (!apiKey) return { _reqId, error: 'Gemini API key is missing' };
+      const keys = String(cfg('GEMINI_API_KEY') || '')
+        .split(/[\s,;]+/)
+        .map((key) => key.trim())
+        .filter(Boolean);
+      if (!keys.length) return { _reqId, error: 'Gemini API key is missing' };
       const configuredModel = String(payload.model || cfg('GEMINI_MODEL') || '').trim();
       const model = !configuredModel || configuredModel === 'gemini-2.5-flash'
         ? 'gemini-3.8-flash'
         : configuredModel;
       if (model !== cfg('GEMINI_MODEL')) await saveConfig({ GEMINI_MODEL: model });
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout || 30000);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents, generationConfig }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (!response.ok) {
-          const text = await response.text().catch(() => '');
-          return { _reqId, status: response.status, error: `Gemini HTTP ${response.status}: ${text.slice(0, 400)}` };
-        }
-        const json = await response.json();
-        const text = (json.candidates?.[0]?.content?.parts || [])
-          .map((part) => part.text || '')
-          .join('')
-          .trim();
-        return { _reqId, text };
-      } catch (err) {
-        clearTimeout(timer);
-        return { _reqId, error: err.name === 'AbortError' ? 'Gemini request timeout' : err.message };
+
+      const now = Date.now();
+      const cooldownMs = (Number(cfg('GEMINI_KEY_COOLDOWN')) ||
+        Number(cfg('OPENROUTER_COOLDOWN')) || 180) * 1000;
+      const order = [];
+      for (let offset = 0; offset < keys.length; offset++) {
+        order.push((_geminiKeyCursor + offset) % keys.length);
       }
+
+      let tried = 0;
+      let lastStatus = 0;
+      let lastError = '';
+      for (const keyIndex of order) {
+        const key = keys[keyIndex];
+        const state = _geminiKeyState.get(key) || {};
+        if ((state.limitedUntil && state.limitedUntil > now) ||
+            (state.invalidUntil && state.invalidUntil > now)) continue;
+        tried += 1;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout || 30000);
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents, generationConfig }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (response.ok) {
+            const json = await response.json();
+            const text = (json.candidates?.[0]?.content?.parts || [])
+              .map((part) => part.text || '')
+              .join('')
+              .trim();
+            _geminiKeyCursor = (keyIndex + 1) % keys.length;
+            return { _reqId, text, keyIndex: keyIndex + 1, keyCount: keys.length };
+          }
+          const body = await response.text().catch(() => '');
+          lastStatus = response.status;
+          lastError = `Gemini HTTP ${response.status}: ${body.slice(0, 300)}`;
+          const quota = response.status === 429 || response.status === 503 ||
+            (response.status === 403 && /quota|rate/i.test(body));
+          const invalid = response.status === 401 ||
+            (response.status === 400 && /api[ _-]?key not valid|invalid api key/i.test(body));
+          if (quota) {
+            _geminiKeyState.set(key, { ...state, limitedUntil: now + cooldownMs });
+            continue;
+          }
+          if (invalid) {
+            _geminiKeyState.set(key, { ...state, invalidUntil: now + 24 * 60 * 60 * 1000 });
+            continue;
+          }
+          return { _reqId, status: response.status, error: lastError, keyIndex: keyIndex + 1, keyCount: keys.length };
+        } catch (err) {
+          clearTimeout(timer);
+          if (err.name === 'AbortError') {
+            return {
+              _reqId,
+              error: 'Gemini request timeout',
+              keyIndex: keyIndex + 1,
+              keyCount: keys.length,
+            };
+          }
+          lastStatus = err.status || 0;
+          lastError = err.message;
+          continue;
+        }
+      }
+
+      const cooling = keys.length - tried;
+      return {
+        _reqId,
+        status: lastStatus || 429,
+        error: tried === 0
+          ? `All ${keys.length} Gemini API key(s) are cooling down or invalid`
+          : `All Gemini API key(s) failed (${tried} tried${cooling ? `, ${cooling} cooling down` : ''}): ${lastError || 'rate limited'}`,
+        allKeysLimited: true,
+        keysTried: tried,
+        keyCount: keys.length,
+      };
     }
 
     case 'postOllama': {
@@ -775,6 +1011,45 @@ case 'getAnswerKey': {
   }
     }
 
+    case 'SEARCH_WEB_SNIPPETS': {
+      // Fast, best-effort DuckDuckGo scrape used by askAiText() as a last hint
+      // source for short-answer questions missing from both the local bank and
+      // amauoed.com. Hard 4 s cap; any failure (network error, abort/timeout,
+      // anti-bot page, empty HTML) resolves with text: '' so the AI stage in
+      // providers.js runs exactly as it did before — nothing is ever thrown
+      // back at the caller.
+      const { query, maxResults } = payload;
+      const term = String(query || '').replace(/\s+/g, ' ').trim();
+      if (!term) return { _reqId, text: '' };
+      const limit = Math.min(Math.max(Number(maxResults) || 3, 1), 5);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      try {
+        const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(term.slice(0, 400))}`;
+        const response = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuizStudyBot/1.0)' },
+          signal: controller.signal,
+        });
+        if (!response.ok) return { _reqId, text: '' };
+        const html = await response.text();
+        const snippets = [];
+        const seen = new Set();
+        const snippetRe = /<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
+        for (const match of html.matchAll(snippetRe)) {
+          if (snippets.length >= limit) break;
+          const snippet = stripHtml(match[1]).slice(0, 400).trim();
+          if (!snippet || seen.has(snippet)) continue;
+          seen.add(snippet);
+          snippets.push(`${snippets.length + 1}. ${snippet}`);
+        }
+        return { _reqId, text: snippets.join('\n') };
+      } catch {
+        return { _reqId, text: '' };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     case 'searchWeb': {
       const { query, maxResults } = payload;
   const limit = maxResults || 3;
@@ -855,6 +1130,13 @@ case 'getAnswerKey': {
       if (!owner || !repo) return { _reqId, status: 'skipped' };
       const result = await syncGitHubBank(owner, repo, bankPath, token);
       return { _reqId, ...result };
+    }
+
+    case 'CHECK_EXTENSION_UPDATE': {
+      // Cached for 6 hours unless the caller forces a fresh GitHub lookup.
+      const force = payload.force !== undefined ? !!payload.force : !!message.force;
+      const status = await getExtensionUpdateStatus(force);
+      return { _reqId, ...status };
     }
 
     default:

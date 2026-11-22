@@ -1,6 +1,12 @@
 /* ─────────────────────────────────────────────────────────────────────────────
-   hud.css — Shadow-DOM-scoped styles for the Moodle Quiz Bot HUD
+   hud.css — Quiz Bot HUD panel (Shadow-DOM-scoped styles)
    Never intercepts page clicks except its own buttons.
+
+   Layout: the HUD host sits 165px from the right edge so the standalone
+   roaming mascot (extension/mascot.js, 130 px, parked bottom-right and
+   wandering Shimeji-style) can never cover the Run / Stop / Clear / Harvest
+   buttons. All mascot styling lives in mascot.js — this file only styles the
+   closed-shadow HUD.
    ───────────────────────────────────────────────────────────────────────────── */
 
 :host {
@@ -9,9 +15,9 @@
   position: fixed;
   z-index: 2147483647;
   bottom: 20px;
-  right: 20px;
+  right: 165px;
   width: 380px;
-  max-width: calc(100vw - 40px);
+  max-width: calc(100vw - 205px);
   max-height: calc(100vh - 40px);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   font-size: 13px;
@@ -24,33 +30,65 @@
   pointer-events: auto;
 }
 
-#hud-root {
-  background: #1a1a2e;
+/* --- Speech-bubble HUD panel --- */
+#hud-root,
+#qb-hud,
+.qb-panel {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: calc(100vw - 205px);
+  box-sizing: border-box;
+  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);
   border: 1px solid #16213e;
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.5);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 40px);
+  pointer-events: auto;
 }
 
+/* Narrow viewports: stack the panel above the mascot instead of beside it. */
+@media (max-width: 564px) {
+  :host {
+    right: 20px;
+    bottom: 20px;
+    width: calc(100vw - 40px);
+    max-width: calc(100vw - 40px);
+  }
+  #hud-root,
+  #qb-hud,
+  .qb-panel {
+    right: 0;
+    bottom: 148px;
+    width: 100%;
+    max-width: calc(100vw - 40px);
+    max-height: calc(100vh - 260px);
+  }
+}
+
+:host(.active) #hud-root { pointer-events: auto; }
+
 #hud-header {
-  background: #0f3460;
-  padding: 8px 12px;
+  background: linear-gradient(135deg, #082040 0%, #1a3a5c 100%);
+  padding: 10px 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   cursor: move;
   user-select: none;
   flex-shrink: 0;
+  border-bottom: 1px solid #16213e;
 }
 
 #hud-title {
   flex: 1;
   font-weight: 600;
   font-size: 13px;
-  color: #e94560;
+  color: #ffb347;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -67,34 +105,97 @@
 #hud-status.running { color: #4ade80; }
 #hud-status.stopped { color: #f87171; }
 #hud-status.waiting { color: #fbbf24; }
+#hud-status.reviewing { color: #f5b74f; }
 
+#hud-minimize-btn {
+  width: 28px;
+  height: 28px;
+  background: #16213e;
+  border: 1px solid #4a5568;
+  border-radius: 6px;
+  color: #a0aec0;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  flex-shrink: 0;
+}
+
+#hud-minimize-btn:hover { background: #2d3748; color: #e2e8f0; }
+
+#hud-minimize-btn.collapsed { background: #3182ce; color: white; }
+
+/* Speech bubble pointing to mascot */
+#hud-bubble {
+  position: relative;
+  margin: 8px 12px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(12px);
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.15);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  pointer-events: auto;
+  max-width: 85%;
+  word-break: break-word;
+}
+
+#hud-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -10px;
+  right: 20px;
+  border-width: 10px 10px 0;
+  border-style: solid;
+  border-color: rgba(255,255,255,0.08) transparent;
+  display: block;
+  width: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Latest status line */
+#hud-status-line {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 6px;
+  color: #7f8c8d;
+}
+
+/* Log box */
 #hud-body {
   padding: 8px 12px;
   overflow-y: auto;
   flex: 1;
-  max-height: 300px;
+  max-height: 220px;
+  scrollbar-width: thin;
+  scrollbar-color: #0f3460 #16213e;
 }
+
+#hud-body::-webkit-scrollbar { width: 4px; }
+#hud-body::-webkit-scrollbar-track { background: #16213e; }
+#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
 
 .hud-entry {
   padding: 4px 0;
-  border-bottom: 1px solid #16213e;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .hud-entry:last-child { border-bottom: none; }
 
 .hud-entry .q-text {
-  color: #94a3b8;
+  color: #cbd5e0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.hud-entry .q-result {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  margin-top: 2px;
 }
 
 .hud-entry .q-tier {
@@ -103,6 +204,7 @@
   padding: 1px 6px;
   border-radius: 6px;
   color: #60a5fa;
+  white-space: nowrap;
 }
 
 .hud-entry .q-answer {
@@ -115,19 +217,17 @@
 
 .hud-entry .q-score {
   font-size: 10px;
-  color: #94a3b8;
+  color: #7f8c8d;
 }
 
-.hud-entry .q-error {
-  color: #f87171;
-}
-
+/* Button row */
 #hud-footer {
   padding: 8px 12px;
   display: flex;
   gap: 6px;
   flex-shrink: 0;
-  border-top: 1px solid #16213e;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.1);
 }
 
 .hud-btn {
@@ -139,13 +239,14 @@
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s;
+  flex: 1;
 }
 
 #hud-stop-btn {
-  background: #dc2626;
+  background: #e53e3e;
   color: white;
 }
-#hud-stop-btn:hover { background: #b91c1c; }
+#hud-stop-btn:hover { background: #c53030; }
 
 #hud-clear-btn {
   background: #374151;
@@ -160,18 +261,18 @@
 #hud-harvest-btn:hover { background: #0d5f59; }
 
 #hud-toggle-btn {
-  background: #2563eb;
+  background: #3182ce;
   color: white;
-  flex: 1;
 }
-#hud-toggle-btn:hover { background: #1d4ed8; }
-#hud-toggle-btn.active { background: #059669; }
+#hud-toggle-btn:hover { background: #2c5282; }
+#hud-toggle-btn.active { background: #38bdf8; }
 
+/* Log line styles */
 .hud-log-line {
   font-size: 11px;
   color: #64748b;
   padding: 1px 0;
-  border-bottom: 1px solid rgba(22,33,62,0.5);
+  border-bottom: 1px solid rgba(22,33,62,0.3);
 }
 
 .hud-log-line.info { color: #94a3b8; }
@@ -179,7 +280,5 @@
 .hud-log-line.warn { color: #fbbf24; }
 .hud-log-line.error { color: #f87171; }
 
-/* Scrollbar */
-#hud-body::-webkit-scrollbar { width: 4px; }
-#hud-body::-webkit-scrollbar-track { background: #16213e; }
-#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+/* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */
+:host(.minimized) #hud-root { display: none; }
