@@ -126,15 +126,22 @@ async function saveCorrectAnswerFromReview(question, answer){
 }
 
 // Ask the background worker to push the (verified) local bank to GitHub.
+// Debounced so a burst of learned answers results in a single push.
+let _gitHubPushTimer = null;
 function requestGitHubBankPush(){
-  try {
-    chrome.runtime.sendMessage({ action: 'SYNC_GITHUB_BANK' }, (resp) => {
-      if (chrome.runtime.lastError) return;
-      if (!resp) return;
-      if (resp.error) { logHUD('warn', 'GitHub push: ' + resp.error); return; }
-      if (resp.status === 'ok') logHUD('info', `GitHub bank pushed (${resp.pushed || 0} questions)`);
-    });
-  } catch (e) { /* extension context may have been invalidated */ }
+  if (_gitHubPushTimer) return;
+  _gitHubPushTimer = setTimeout(async () => {
+    _gitHubPushTimer = null;
+    try {
+      await flushNow();
+      chrome.runtime.sendMessage({ action: 'SYNC_GITHUB_BANK' }, (resp) => {
+        if (chrome.runtime.lastError) return;
+        if (!resp) return;
+        if (resp.error) { logHUD('warn', 'GitHub push: ' + resp.error); return; }
+        if (resp.status === 'ok') logHUD('info', `GitHub bank pushed (${resp.pushed || 0} questions)`);
+      });
+    } catch (e) { /* extension context may have been invalidated */ }
+  }, 1000);
 }
 
 function isGenericHarvestTitle(value) {
@@ -756,6 +763,32 @@ async function learnFromReviewPage() {
       if (rowResult === 'right' || containerCorrect === true) await saveRight(answer);
       else if (rowResult === 'wrong' || containerCorrect === false) await saveWrong(answer);
     }
+
+    // 5) Two-option / True-False: when the attempt was wrong (earned === 0), the
+    //    opposite (unselected) option is the correct answer — save it as verified.
+    if (grade && grade.earned === 0) {
+      const optionInputs = Array.from(c.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
+        .filter((input) => input.value !== '-1');
+      const optionTexts = [];
+      for (const input of optionInputs) {
+        const t = reviewAnswerText(input);
+        if (t && !optionTexts.some((x) => normText(x) === normText(t))) optionTexts.push(t);
+      }
+      if (optionTexts.length === 2) {
+        const selected = optionInputs
+          .filter((input) => input.checked)
+          .map((input) => reviewAnswerText(input))
+          .filter(Boolean);
+        if (selected.length === 1) {
+          const other = optionTexts.find((t) => normText(t) !== normText(selected[0]));
+          if (other) {
+            await saveRight(other);
+            logHUD('info', 'Deduced opposite answer for 2-option question: ' + other.slice(0, 40));
+            requestGitHubBankPush();
+          }
+        }
+      }
+    }
   }
   return learned;
 }
@@ -796,6 +829,26 @@ async function submitAttempt() {
   for (const btn of buttons) { if (btn.textContent.trim().toLowerCase().includes('submit all and finish')) { btn.click(); return true; } }
   return false;
 }
+// Build a predicate that flags options matching a stored (known-wrong) answer.
+async function buildWrongOptionFilter(qText, options) {
+  const wrong = await getWrongAnswers(qText);
+  const set = new Set((wrong || []).map((w) => normText(w)).filter(Boolean));
+  return (option) => {
+    const on = normText(option);
+    if (!on) return false;
+    if (set.has(on)) return true;
+    for (const w of set) if (similarity(on, w) >= 0.9) return true;
+    return false;
+  };
+}
+
+// Return `preferIdx` unless it maps to a known-wrong option, else the first allowed one.
+function firstAllowedOption(options, isWrong, preferIdx) {
+  if (preferIdx >= 0 && preferIdx < options.length && !isWrong(options[preferIdx])) return preferIdx;
+  for (let i = 0; i < options.length; i++) if (!isWrong(options[i])) return i;
+  return preferIdx;
+}
+
 async function handleQuestion(data) {
   const { text, options, elements, kind, images } = data;
   const qkey = elemSig(elements);
@@ -858,7 +911,9 @@ async function handleQuestion(data) {
   }
 
   if (kind === 'check') {
-    const localMatches = await localBankOptionMatches(text, options);
+    const isWrong = await buildWrongOptionFilter(text, options);
+    const localMatches = (await localBankOptionMatches(text, options))
+      .filter((match) => !isWrong(options[match.index]));
     if (localMatches.length) {
       for (const match of localMatches) {
         const element = elements[match.index];
@@ -867,7 +922,8 @@ async function handleQuestion(data) {
       }
       return true;
     }
-    const picks = await askAiMulti(text, options, images);
+    let picks = await askAiMulti(text, options, images);
+    picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {
       logHUD('warn','Waiting for manual checkboxes...');
       const ok = await waitForManual(elements, 'check', text, options);
@@ -897,14 +953,18 @@ async function handleQuestion(data) {
   }
 
   // Radio / MCQ
-  const localMatches = await localBankOptionMatches(text, options);
+  const isWrong = await buildWrongOptionFilter(text, options);
+  const localMatches = (await localBankOptionMatches(text, options))
+    .filter((match) => !isWrong(options[match.index]));
   if (localMatches.length) {
     const match = localMatches[0];
     if (elements[match.index]) elements[match.index].click();
     logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
     return true;
   }
-  const idx = await askAi(text, options, images);
+  let idx = await askAi(text, options, images);
+  // Safety net: never click a stored-wrong option even if a provider returns one.
+  if (idx !== -1 && isWrong(options[idx])) idx = firstAllowedOption(options, isWrong, idx);
   if (idx === -1) {
     logHUD('warn','Waiting for manual selection...');
     const ok = await waitForManual(elements, 'radio', text, options);
