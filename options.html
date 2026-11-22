@@ -18,6 +18,28 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 #status { margin-top: 12px; padding: 8px; border-radius: 6px; font-size: 12px; display: none; }
 #status.success { display: block; background: #065f46; color: #6ee7b7; }
 #status.error { display: block; background: #7f1d1d; color: #fca5a5; }
+.save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+#save-status { font-size: 13px; font-weight: 600; min-height: 16px; }
+
+/* Floating toast — always visible at the user's scroll position. */
+#toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 9999;
+  padding: 12px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #22c55e;
+  background: #065f46;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+#toast.show { opacity: 1; transform: translateY(0); }
 </style>
 </head>
 <body>
@@ -68,7 +90,10 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 <div class="row"><label><input type="checkbox" id="VISION_ENABLED" checked> Vision</label></div>
 </div>
 
-<button class="btn" id="saveBtn">Save Settings</button>
+<div class="save-row">
+  <button class="btn" id="saveBtn">Save Settings</button>
+  <span id="save-status" aria-live="polite"></span>
+</div>
 <div class="section">
 <h2>Local Answer Bank</h2>
 <p id="answerBankCount" aria-live="polite">Stored questions: loading...</p>
@@ -87,6 +112,8 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
   <button class="btn" id="syncNowBtn">Sync Now</button>
   <div id="syncStatus" style="margin-top: 8px; font-size: 12px; color: #888;"></div>
 </div>
+
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
 <script src="storage.js"></script>

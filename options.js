@@ -11,9 +11,19 @@ async function loadSettings() {
   });
 }
 
-async function saveSettings(values) {
-  return new Promise((resolve) => {
-    chrome.storage.sync.set(values, () => resolve());
+function saveSettings(values) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.sync.set(values, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve();
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
   });
 }
 
@@ -47,6 +57,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       el.value = value;
     }
   }
+
+  // Save Settings handler — always shows visible feedback (inline + floating toast).
+  document.getElementById('saveBtn').addEventListener('click', async () => {
+    const saveBtn = document.getElementById('saveBtn');
+    saveBtn.disabled = true;
+    try {
+      await saveSettings(collectSettings());
+      showSaveFeedback('✓ Settings saved!', false);
+    } catch (error) {
+      showSaveFeedback((error && error.message) || String(error), true);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
 
   // Sync Now button handler
   document.getElementById('syncNowBtn').addEventListener('click', async () => {
@@ -157,6 +181,51 @@ function showSyncStatus(message, isError = false) {
   el.style.color = isError ? '#d63851' : '#4c1';
   el.textContent = message;
   setTimeout(() => { el.textContent = ''; }, 5000);
+}
+
+// Gather the current values of all configurable fields.
+function collectSettings() {
+  const values = {};
+  for (const key of FIELD_MAP) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    if (el.type === 'checkbox') {
+      values[key] = el.checked;
+    } else if (el.type === 'number') {
+      const num = Number(el.value);
+      values[key] = el.value !== '' && Number.isFinite(num) ? num : el.value;
+    } else {
+      values[key] = el.value;
+    }
+  }
+  return values;
+}
+
+// Recent save feedback: green "✓ Settings saved!" on success, red error on failure.
+let _saveInlineTimer = null;
+let _saveToastTimer = null;
+
+function showSaveFeedback(message, isError = false) {
+  const color = isError ? '#fca5a5' : '#22c55e';
+  const background = isError ? '#7f1d1d' : '#065f46';
+
+  const inline = document.getElementById('save-status');
+  if (inline) {
+    inline.textContent = message;
+    inline.style.color = isError ? '#d63851' : '#22c55e';
+    if (_saveInlineTimer) clearTimeout(_saveInlineTimer);
+    _saveInlineTimer = setTimeout(() => { inline.textContent = ''; }, 3000);
+  }
+
+  const toast = document.getElementById('toast');
+  if (toast) {
+    toast.textContent = message;
+    toast.style.color = color;
+    toast.style.background = background;
+    toast.classList.add('show');
+    if (_saveToastTimer) clearTimeout(_saveToastTimer);
+    _saveToastTimer = setTimeout(() => { toast.classList.remove('show'); }, 3000);
+  }
 }
 
 function getDefault(key) {
