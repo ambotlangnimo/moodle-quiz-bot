@@ -914,10 +914,16 @@ async function handleMessage(message, sender) {
           return { error: `Network error: ${err.message}` };
         }
 
-        // 2) Merge the remote bank with locally learned (verified) answers.
+        // 2) Pull first: bank.json may be a bare question map or wrapped in
+        //    { "questions": { ... }, "updatedAt": "..." }. Unwrap it and merge every
+        //    remote question into chrome.storage.local so those answers are usable
+        //    locally before the push below.
         const remote = meta.content && typeof meta.content === 'object' && !Array.isArray(meta.content)
           ? meta.content
           : {};
+        const pulled = await mergeRemoteBankIntoLocal(remote);
+
+        // 3) Merge the remote bank with locally learned (verified) answers.
         const wrapper = (remote.questions && typeof remote.questions === 'object' && !Array.isArray(remote.questions))
           ? remote
           : null;
@@ -928,6 +934,13 @@ async function handleMessage(message, sender) {
         const stored = await chrome.storage.local.get(STORAGE_KEYS.ANSWER_KEY);
         const local = validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {});
         const signature = (key, hit) => normText(hit.question || key) + '|' + normText(hit.answer);
+        // normalized question text -> key spelling already used on GitHub, so merging
+        // never adds a second (lower-cased) copy of a question the bank already holds.
+        const remoteKeyByNorm = new Map();
+        for (const rawKey of Object.keys(questions)) {
+          if (BANK_META_KEYS.has(rawKey)) continue;
+          remoteKeyByNorm.set(normText(rawKey), rawKey);
+        }
 
         for (const [key, entry] of Object.entries(local)) {
           if (!key || !Array.isArray(entry) || !Array.isArray(entry[1])) continue;
@@ -944,18 +957,20 @@ async function handleMessage(message, sender) {
           }));
           if (!wanted.length) continue;
 
-          const existing = questions[key] ? normalizeAnswerEntry(key, questions[key]) : null;
+          const targetKey = remoteKeyByNorm.get(key) || key;
+          const existing = questions[targetKey] ? normalizeAnswerEntry(targetKey, questions[targetKey]) : null;
           const hits = existing ? existing[1].slice() : [];
-          const seen = new Set(hits.map((hit) => signature(key, hit)));
+          const seen = new Set(hits.map((hit) => signature(targetKey, hit)));
           for (const hit of wanted) {
-            const sig = signature(key, hit);
+            const sig = signature(targetKey, hit);
             if (seen.has(sig)) continue;
             seen.add(sig);
             hits.push(hit);
           }
           if (hits.length) {
             const ts = Math.max(existing ? existing[0] : 0, entry[0] || 0, Date.now() / 1000);
-            questions[key] = [ts, hits];
+            questions[targetKey] = [ts, hits];
+            remoteKeyByNorm.set(key, targetKey);
           }
         }
 
@@ -963,14 +978,18 @@ async function handleMessage(message, sender) {
           ? { ...wrapper, questions, updatedAt: new Date().toISOString() }
           : questions;
 
-        // 3) PUT with `sha` (omitted only for a brand-new file), retrying once on a stale sha.
+        // 4) PUT with `sha` (omitted only for a brand-new file), retrying once on a stale sha.
         const commitMsg = 'Moodle Quiz Bot: auto-sync from extension';
         const put = await gitHubPutJson(owner, repo, path, token, bankObj, commitMsg, meta.sha);
         if (!put.ok) {
           return { error: `GitHub PUT failed: ${put.status} ${put.message || ''}` };
         }
 
-        return { status: 'ok', pushed: Object.keys(questions).length };
+        return {
+          status: 'ok',
+          added: pulled.added,
+          pushed: Object.keys(questions).filter((key) => !BANK_META_KEYS.has(key)).length,
+        };
       } catch (err) {
         return { error: `Sync failed: ${err.message}` };
       }

@@ -102,7 +102,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     showSyncStatus('Syncing...');
     const result = await syncGitHubBank(owner, repo, path, token);
     if (result && result.status === 'ok') {
-      showSyncStatus(`Synced ${result.added} new answer(s) from GitHub bank.`, false);
+      // Refresh "Stored questions: X" right away so the pull is visible without a reload.
+      await refreshAnswerBankCount();
+      showSyncStatus(`Synced ${result.added} new answer(s) from GitHub bank. Stored questions: ${result.questions}.`, false);
     } else {
       showSyncStatus(result?.error || 'Sync failed.', true);
     }
@@ -136,21 +138,15 @@ async function syncGitHubBank(owner, repo, path, token) {
     } catch (err) {
       return { error: `Network error: ${err.message}` };
     }
+    if (meta.missing) return { error: `No question bank found at ${path} in ${owner}/${repo}.` };
+    if (!meta.content) return { error: `Could not parse ${path} as question-bank JSON.` };
 
-    // 2) Merge: start from whatever the remote bank already holds.
-    let bankObj = {};
-    if (meta.content && typeof meta.content === 'object' && !Array.isArray(meta.content)) {
-      bankObj = meta.content;
-    }
-
-    // 3) PUT with `sha` (omitted only for a brand-new file), retrying once on a stale sha.
-    const commitMsg = 'Moodle Quiz Bot: auto-sync from extension';
-    const put = await gitHubPutJson(owner, repo, path, token, bankObj, commitMsg, meta.sha);
-    if (!put.ok) {
-      return { error: `GitHub PUT failed: ${put.status} ${put.message || ''}` };
-    }
-
-    return { status: 'ok', added: 0 };
+    // 2) Pull: bank.json is either a bare question map or wrapped in
+    //    { "questions": { ... }, "updatedAt": "..." }. mergeRemoteBankIntoLocal()
+    //    unwraps the `questions` map, iterates over the question keys and merges
+    //    every answer into chrome.storage.local (then flushes the write).
+    const pulled = await mergeRemoteBankIntoLocal(meta.content);
+    return { status: 'ok', added: pulled.added, questions: pulled.questions, sha: meta.sha };
   } catch (err) {
     return { error: `Sync failed: ${err.message}` };
   }

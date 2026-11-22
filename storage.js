@@ -334,14 +334,13 @@ async function saveLocalAnswer(question, answer, course = 'learned-review') {
 
 async function answerKeyImport(imported) {
   await ensureLoaded();
-  const questions = imported && imported.questions && typeof imported.questions === 'object'
-    ? imported.questions
-    : imported;
-  if (!questions || typeof questions !== 'object' || Array.isArray(questions)) {
+  const questions = unwrapBankQuestions(imported);
+  if (!questions) {
     throw new Error('Question bank JSON must contain a question map.');
   }
   let added = 0;
   for (const [rawKey, entry] of Object.entries(questions)) {
+    if (BANK_META_KEYS.has(rawKey)) continue;
     const key = normText(rawKey);
     const normalized = normalizeAnswerEntry(rawKey, entry);
     if (!key || !normalized) continue;
@@ -364,6 +363,56 @@ async function answerKeyImport(imported) {
   evictAnswerKeys();
   scheduleFlush();
   return { added, questions: Object.keys(_answerKeyMem).length };
+}
+
+// Keys a bank file may carry that are not questions themselves. They must never be
+// imported as question entries (a bare map without the `questions` wrapper still
+// sometimes ships `updatedAt` alongside the questions).
+const BANK_META_KEYS = new Set(['questions', 'updatedAt', 'format', 'version', 'exportedAt']);
+
+/**
+ * Extract the question map out of a bank payload.
+ *
+ * GitHub banks are written either as `{ "questions": { ... }, "updatedAt": "..." }`
+ * (the wrapper used by the Python harvester and by this extension's exporter) or as
+ * a bare `{ question: [timestamp, hits] }` map. Unwrap before iterating over the
+ * question keys. Returns null when the payload is not a question map at all.
+ */
+function unwrapBankQuestions(bankJson) {
+  const entriesMap = (bankJson && typeof bankJson.questions === 'object' && !Array.isArray(bankJson.questions))
+    ? bankJson.questions
+    : bankJson;
+  if (!entriesMap || typeof entriesMap !== 'object' || Array.isArray(entriesMap)) return null;
+  return entriesMap;
+}
+
+/**
+ * Merge a GitHub bank payload into chrome.storage.local (the pull direction).
+ *
+ * Shared by the options page ("Sync Now") and the service worker (push sync), so
+ * both accept every bank shape and count new answers identically.
+ * Returns { added, questions }: newly stored answers and the resulting total.
+ */
+async function mergeRemoteBankIntoLocal(bankJson) {
+  const entriesMap = unwrapBankQuestions(bankJson);
+  if (!entriesMap) return { added: 0, questions: await answerKeyCount() };
+
+  const pullMap = {};
+  for (const [rawKey, value] of Object.entries(entriesMap)) {
+    if (!rawKey || BANK_META_KEYS.has(rawKey)) continue;
+    const normalized = normalizeAnswerEntry(rawKey, value);
+    if (!normalized || !normalized[1].length) continue;
+    pullMap[rawKey] = normalized;
+  }
+  const pulled = await answerKeyImport({ questions: pullMap });
+  // Persist right away so the service worker and content scripts see the merged
+  // answers without waiting for the 500 ms flush debounce.
+  try {
+    await flushNow();
+  } catch (error) {
+    // Merged in memory; the scheduled flush retries the storage write.
+  }
+  return { added: pulled.added, questions: pulled.questions };
 }
 
 async function answerKeyDelete(key) {
