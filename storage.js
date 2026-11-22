@@ -77,6 +77,7 @@ function normalizeAnswerEntry(question, value) {
         : question,
       answer: hit.answer.trim(),
       course: typeof hit.course === 'string' ? hit.course : 'imported',
+      verified: hit.verified === true,
     });
   }
   return [timestamp, hits];
@@ -194,18 +195,27 @@ async function answerKeyGet(key) {
   return entry[1]; // hits array
 }
 
-async function answerKeyPut(key, hits, course = 'learned-review') {
+async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   await ensureLoaded();
+  const verified = !!(opts && opts.verified);
   if (typeof hits === 'string') {
     const question = key;
     key = normText(question);
     const answer = hits.replace(/<[^>]+>/g, '').trim();
     if (!key || !answer) return;
+    const answerNorm = normText(answer);
     hits = (_answerKeyMem[key]?.[1] || []).slice();
-    if (!hits.some((hit) => hit && normText(hit.answer) === normText(answer))) {
-      hits.push({ question: question.trim(), answer, course });
+    const existing = hits.find((hit) => hit && normText(hit.answer) === answerNorm);
+    if (existing) {
+      if (verified && !existing.verified) existing.verified = true;
+    } else {
+      const hit = { question: question.trim(), answer, course };
+      if (verified) hit.verified = true;
+      hits.push(hit);
     }
-    await wrongDeleteFuzzy(key, normText(answer));
+    await wrongDeleteFuzzy(key, answerNorm);
+  } else if (Array.isArray(hits) && verified) {
+    hits = hits.map((hit) => (hit && typeof hit === 'object') ? { ...hit, verified: true } : hit);
   }
   key = normText(key);
   if (!key || !Array.isArray(hits) || !hits.length) return;

@@ -51,14 +51,60 @@ function cleanCourseTitle(value) {
     .trim();
 }
 
-function parseGradeFromReview(){
-  if(!document.querySelector('.grade'))return null;
-  const gradeText = document.querySelector('.grade').innerText || '';
-  const m = gradeText.match(/Mark\s+([0-9.]+)\s+out\s+of\s+([0-9.]+)/i);
-  if(!m)return null;
-  const earned = parseFloat(m[1]);
-  const max = parseFloat(m[2]);
-  return {earned, max};
+function normalizeReviewText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// Parse a Moodle 4.x review question. Normalises whitespace in ".info"/".grade"
+// before matching "Mark X out of Y", and falls back to the correctness
+// indicators used by AMA's theme (.que.correct, "Your answer is correct",
+// .qnbutton.correct / title containing "Correct").
+// Returns { earned, max, correct } or null when there is no signal at all.
+function parseGradeFromReview(scope) {
+  const root = scope || document;
+  let infoText = '';
+  for (const node of root.querySelectorAll('.info, .grade')) {
+    infoText += ' ' + (node.innerText || node.textContent || '');
+  }
+  infoText = normalizeReviewText(infoText);
+  if (!infoText && root.innerText) infoText = normalizeReviewText(root.innerText);
+
+  let earned = null;
+  let max = null;
+  const m = infoText.match(/Mark\s*([0-9.]+)\s*out of\s*([0-9.]+)/i);
+  if (m) {
+    earned = parseFloat(m[1]);
+    max = parseFloat(m[2]);
+  }
+
+  // Grade numbers are authoritative when present: 1.00/1.00 -> right, 0.00/1.00 -> wrong.
+  let correct = null;
+  if (earned !== null && max !== null && !Number.isNaN(earned) && !Number.isNaN(max)) {
+    correct = earned !== 0 && earned >= max;
+  }
+
+  // Fallback indicators when the numeric grade is missing or unparsable.
+  if (correct === null) {
+    const text = normalizeReviewText(root.innerText || root.textContent || '');
+    const cls = new Set(String((root !== document && root.className) || '').toLowerCase().split(/\s+/));
+    if (/Your answer is correct/i.test(text)) correct = true;
+    else if (/Your answer is (?:incorrect|partially correct)/i.test(text)) correct = false;
+    else if (root.querySelector('.que.correct')) correct = true;
+    else if (cls.has('correct') && !cls.has('partiallycorrect')) correct = true;
+    else if (cls.has('incorrect') || cls.has('partiallycorrect')) correct = false;
+    else {
+      const nav = root.querySelector ? root.querySelector('.qnbutton') : null;
+      if (nav) {
+        const navCls = String(nav.className || '').toLowerCase();
+        const title = nav.getAttribute('title') || '';
+        if (/partiallycorrect|incorrect/.test(navCls) || /incorrect/i.test(title)) correct = false;
+        else if (/correct/.test(navCls) || /correct/i.test(title)) correct = true;
+      }
+    }
+  }
+
+  if (earned === null && correct === null) return null;
+  return { earned, max, correct };
 }
 
 function isReviewPage(){
@@ -66,15 +112,29 @@ function isReviewPage(){
 }
 
 async function saveCorrectAnswerFromReview(question, answer){
-  if(!answer||!answer.trim())return;
+  if(!answer||!answer.trim())return false;
   const key = normText(question);
   const value = answer.trim();
-  if(!key||!value)return;
+  if(!key||!value)return false;
   const hits = await answerKeyGet(key);
   const answerNorm = normText(value);
   if(!hits.some((hit) => hit && normText(hit.answer)===answerNorm)){
-    await answerKeyPut(key, value, 'review-saved');
+    await answerKeyPut(key, value, 'learned-review', { verified: true });
+    return true;
   }
+  return false;
+}
+
+// Ask the background worker to push the (verified) local bank to GitHub.
+function requestGitHubBankPush(){
+  try {
+    chrome.runtime.sendMessage({ action: 'SYNC_GITHUB_BANK' }, (resp) => {
+      if (chrome.runtime.lastError) return;
+      if (!resp) return;
+      if (resp.error) { logHUD('warn', 'GitHub push: ' + resp.error); return; }
+      if (resp.status === 'ok') logHUD('info', `GitHub bank pushed (${resp.pushed || 0} questions)`);
+    });
+  } catch (e) { /* extension context may have been invalidated */ }
 }
 
 function isGenericHarvestTitle(value) {
@@ -583,79 +643,118 @@ async function clickFinish() {
     return false;
   } catch(e) { return false; }
 }
+// Extract clean option text for a (possibly disabled) review input.
+function reviewAnswerText(inputOrRow) {
+  const node0 = inputOrRow;
+  const strip = (node) => {
+    if (!node) return '';
+    const clone = node.cloneNode(true);
+    clone.querySelectorAll('script, style, .icon, .feedbackicon, .grade, .state, .questionflag, .accesshide, .answernumber').forEach((n) => n.remove());
+    return normalizeReviewText(clone.textContent || '');
+  };
+  let input = null;
+  if (node0 && node0.tagName === 'INPUT') input = node0;
+  else if (node0 && node0.querySelector) input = node0.querySelector('input[type="radio"], input[type="checkbox"]');
+
+  let text = '';
+  if (input) {
+    const lbl = input.closest('label');
+    if (lbl) text = strip(lbl);
+    if (!text && input.id) {
+      const id = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(input.id) : input.id.replace(/"/g, '\\"');
+      const forLabel = document.querySelector('label[for="' + id + '"]');
+      if (forLabel) text = strip(forLabel);
+    }
+  }
+  if (!text && node0 && node0.closest) {
+    const row = node0.closest('.r0, .r1, [class*="answer"] > div, .answer, .answercell, td');
+    if (row) text = strip(row);
+  }
+  if (!text && input && input.parentElement) text = strip(input.parentElement);
+  // Strip any leading option-letter prefix ("a.", "B)", ...) and trailing state words.
+  text = text.replace(/^[A-Da-d][.)]\s*/, '').replace(/^[A-Da-d][.)]\s*/, '');
+  text = text.replace(/\s*(?:Correct|Incorrect|Partially correct)\s*$/i, '');
+  return normalizeReviewText(text);
+}
+
 async function learnFromReviewPage() {
   const learned = { right: 0, wrong: 0 };
   const containers = Array.from(document.querySelectorAll('.que'));
   for (const c of containers) {
     const qText = qTxt(c);
     if (!qText) continue;
-    const classes = new Set(String(c.className || '').toLowerCase().split(/\s+/));
-    const feedback = Array.from(c.querySelectorAll('.feedback'))
-      .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase())
-      .join(' ');
-    const rightAnswers = c.querySelectorAll('.rightanswer');
-    const overall = classes.has('incorrect') ? 'wrong'
-      : classes.has('correct') ? 'right'
-      : classes.has('partiallycorrect') ? 'partial'
-      : /\byour answer is incorrect\b|\bis incorrect\b/.test(feedback) ? 'wrong'
-      : /\byour answer is correct\b|\bis correct\b/.test(feedback) ? 'right'
-      : '';
+    const grade = parseGradeFromReview(c);
+    const containerCorrect = grade && typeof grade.correct === 'boolean' ? grade.correct : null;
+
     const savedRight = new Set();
     const savedWrong = new Set();
     const saveRight = async (answer) => {
-      const value = (answer || '').replace(/\s+/g, ' ').trim();
+      const value = normalizeReviewText(answer);
       const signature = normText(value);
       if (!signature || savedRight.has(signature)) return;
       savedRight.add(signature);
-      await answerKeyPut(qText, value);
+      await answerKeyPut(qText, value, 'learned-review', { verified: true });
       learned.right++;
     };
     const saveWrong = async (answer) => {
-      const value = (answer || '').replace(/\s+/g, ' ').trim();
+      const value = normalizeReviewText(answer);
       const signature = normText(value);
       if (!signature || savedWrong.has(signature)) return;
       savedWrong.add(signature);
       await wrongSet(qText, value);
       learned.wrong++;
     };
-    const optionOutcome = (el, useOverall = true) => {
+    const optionOutcome = (el) => {
       let node = el;
       while (node && node !== c) {
         const rowClasses = new Set(String(node.className || '').toLowerCase().split(/\s+/));
-        if (rowClasses.has('incorrect')) return 'wrong';
+        if (rowClasses.has('incorrect') || rowClasses.has('partiallycorrect')) return 'wrong';
         if (rowClasses.has('correct')) return 'right';
         node = node.parentElement;
       }
-      return useOverall && overall !== 'partial' ? overall : '';
+      return '';
     };
 
-    for (const rightAnswer of rightAnswers) {
-      const answer = (rightAnswer.textContent || rightAnswer.innerText || '')
-        .replace(/^\s*The correct answer is\s*:\s*/i, '')
-        .replace(/\s+/g, ' ')
-        .trim()
+    // 1) Authoritative correct-answer text rendered by Moodle ("The correct answer is: ...").
+    for (const rightAnswer of c.querySelectorAll('.rightanswer')) {
+      const answer = normalizeReviewText(rightAnswer.textContent || rightAnswer.innerText || '')
+        .replace(/^The correct answer is\s*:\s*/i, '')
         .replace(/\.$/, '');
-      await saveRight(answer);
+      if (answer) await saveRight(answer);
     }
 
+    // 2) Options flagged correct by the theme (covers multi-select even if unchecked).
     for (const input of c.querySelectorAll('input[type="radio"], input[type="checkbox"]')) {
       if (input.value === '-1') continue;
-      const answer = optTxt(input);
-      const rowResult = optionOutcome(input, false);
-      if (rowResult === 'right') await saveRight(answer);
-      else if (input.checked) {
-        const result = rowResult || optionOutcome(input);
-        if (result === 'right') await saveRight(answer);
-        else if (result === 'wrong') await saveWrong(answer);
-      }
+      if (optionOutcome(input) !== 'right') continue;
+      const text = reviewAnswerText(input);
+      if (text) await saveRight(text);
     }
 
+    // 3) The learner's own checked answer(s). ":checked" matches even when disabled (Moodle 4.x).
+    const checked = c.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked');
+    for (const input of checked) {
+      if (input.value === '-1') continue;
+      const text = reviewAnswerText(input);
+      if (!text) continue;
+      const rowResult = optionOutcome(input);
+      if (rowResult === 'right') { await saveRight(text); continue; }
+      if (rowResult === 'wrong') { await saveWrong(text); continue; }
+      if (containerCorrect === true) await saveRight(text);
+      else if (containerCorrect === false) await saveWrong(text);
+    }
+
+    // 4) Short-answer / typed responses (input value, or plain-text ".answer" rendering).
     for (const input of c.querySelectorAll('input[type="text"]')) {
-      const answer = (input.value || '').trim();
+      let answer = normalizeReviewText(input.value || '');
+      if (!answer) {
+        const plain = c.querySelector('.answer .qtext, .answer p, .answer, .rightanswer');
+        if (plain) answer = normalizeReviewText(plain.textContent || '');
+      }
       if (!answer) continue;
-      const result = optionOutcome(input);
-      if (result === 'right') await saveRight(answer);
-      else if (result === 'wrong') await saveWrong(answer);
+      const rowResult = optionOutcome(input);
+      if (rowResult === 'right' || containerCorrect === true) await saveRight(answer);
+      else if (rowResult === 'wrong' || containerCorrect === false) await saveWrong(answer);
     }
   }
   return learned;
@@ -704,23 +803,25 @@ async function handleQuestion(data) {
 
   // Review page grade detection: when user clicks Run on /mod/quiz/review.php
   if(isReviewPage()){
-    const grade = parseGradeFromReview();
+    const container = (elements && elements[0] && elements[0].closest) ? elements[0].closest('.que') : null;
+    const scope = container || document;
+    const grade = parseGradeFromReview(scope);
     if(grade){
-      // If earned > 0 and earned >= max, or answer is correct, save it permanently
-      const isCorrect = grade.earned > 0 && grade.earned >= grade.max;
-      if(isCorrect){
-        // Find the question text from the current quiz attempt display
-        const questionElem = document.querySelector('.que .qtext,.que .question,.questiontext');
-        const questionText = questionElem ? questionElem.innerText || questionElem.textContent || '' : '';
-        const answerElem = document.querySelector('.que .correct,.que .correctanswer,.answ .correct');
-        const answerText = answerElem ? (answerElem.innerText || answerElem.textContent || '') : '';
+      const gradeLabel = (grade.earned == null ? '?' : grade.earned) + '/' + (grade.max == null ? '?' : grade.max);
+      if(grade.correct === true){
+        // Prefer the per-question correct-answer block; fall back to a ".correct" option.
+        const questionElem = scope.querySelector('.qtext, .question, .questiontext') || scope;
+        const questionText = normalizeReviewText(questionElem ? (questionElem.innerText || questionElem.textContent) : '');
+        const answerElem = scope.querySelector('.rightanswer, .correctanswer, .answ .correct, .correct');
+        const answerText = normalizeReviewText(answerElem ? (answerElem.innerText || answerElem.textContent) : '')
+          .replace(/^The correct answer is\s*:\s*/i, '');
         if(questionText && answerText){
-          await saveCorrectAnswerFromReview(questionText, answerText);
-          logHUD('success', 'Grade detected: '+grade.earned+'/'+grade.max+' - Saved answer permanently');
+          const saved = await saveCorrectAnswerFromReview(questionText, answerText);
+          logHUD('success', 'Grade detected: '+gradeLabel+' - '+(saved ? 'Saved answer permanently' : 'Answer already known'));
+          if(saved){ await flushNow(); requestGitHubBankPush(); }
         }
-      }else if(grade.earned === 0){
-        // Answer was wrong, don't save (but could mark as wrong if needed)
-        logHUD('info', 'Grade detected: '+grade.earned+'/'+grade.max+' - Answer was incorrect, not saved');
+      }else if(grade.correct === false){
+        logHUD('info', 'Grade detected: '+gradeLabel+' - Answer was incorrect, not saved');
       }
     }
     // Continue with normal question handling after grade processing
@@ -854,6 +955,10 @@ async function startLoop() {
           try {
             const learned = await learnFromReviewPage();
             logHUD('info', `Review page: learned ${learned.right} right, ${learned.wrong} wrong`);
+            if (learned.right > 0) {
+              await flushNow();
+              requestGitHubBankPush();
+            }
           } catch (error) {
             logHUD('error', 'Review page learning failed: ' + error.message);
           }
