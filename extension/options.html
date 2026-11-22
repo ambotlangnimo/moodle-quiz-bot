@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Moodle Quiz Bot — Config</title>
+<style>
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
+h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
+.section { background: #16213e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.section h2 { font-size: 14px; color: #60a5fa; margin: 0 0 8px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; align-items: center; }
+.row label { min-width: 180px; font-size: 12px; color: #94a3b8; }
+.row input[type="text"], .row input[type="number"], .row select { background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 4px 8px; color: #e0e0e0; font-size: 12px; flex: 1; min-width: 120px; }
+.row input[type="checkbox"] { accent-color: #e94560; }
+.btn { background: #e94560; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+.btn:hover { background: #d63851; }
+#status { margin-top: 12px; padding: 8px; border-radius: 6px; font-size: 12px; display: none; }
+#status.success { display: block; background: #065f46; color: #6ee7b7; }
+#status.error { display: block; background: #7f1d1d; color: #fca5a5; }
+</style>
+</head>
+<body>
+<h1>Moodle Quiz Bot Config</h1>
+<div class="section">
+<h2>FreeLLMAPI / Custom OpenAI-Compatible Endpoint</h2>
+<div class="row"><label>API Base URL</label><input type="text" id="CUSTOM_API_BASE_URL" value="https://api.freellmapi.com/v1" placeholder="https://api.freellmapi.com/v1"></div>
+<div class="row"><label>API Key</label><input type="password" id="CUSTOM_API_KEY" placeholder="Optional API key"></div>
+<div class="row"><label>Model</label><input type="text" id="CUSTOM_MODEL" value="auto" placeholder="auto"></div>
+</div>
+
+<div class="section">
+<h2>Gemini (Free AI Fallback)</h2>
+<div class="row"><label>API Key</label><input type="password" id="GEMINI_API_KEY" placeholder="Optional Gemini API key"></div>
+<div class="row"><label>Model</label><input type="text" id="GEMINI_MODEL" value="gemini-3.8-flash" readonly></div>
+</div>
+
+<div class="section">
+<h2>OpenRouter (Cloud AI)</h2>
+<div class="row"><label>API Key</label><input type="text" id="OPENROUTER_API_KEY" placeholder="sk-or-..."></div>
+<div class="row"><label>Model</label><input type="text" id="OPENROUTER_MODEL" value="deepseek/deepseek-v4.1-flash"></div>
+<div class="row"><label>Vision Model</label><input type="text" id="OPENROUTER_VISION_MODEL" placeholder="Optional"></div>
+</div>
+
+<div class="section">
+<h2>Ollama (Local Fallback)</h2>
+<div class="row"><label>URL</label><input type="text" id="OLLAMA_URL" value="http://127.0.0.1:11434"></div>
+<div class="row"><label>Model</label><input type="text" id="OLLAMA_MODEL" value="qwen2.5:7b"></div>
+<div class="row"><label>Vision Model</label><input type="text" id="OLLAMA_VISION_MODEL" placeholder="Optional"></div>
+<div class="row"><label>Context Length</label><input type="number" id="OLLAMA_NUM_CTX" value="16384"></div>
+</div>
+
+<div class="section">
+<h2>Behaviour</h2>
+<div class="row"><label><input type="checkbox" id="AUTO_SUBMIT" checked> Auto-Submit when done</label></div>
+<div class="row"><label><input type="checkbox" id="AUTO_CLICK_NEXT" checked> Auto-Click Next</label></div>
+<div class="row"><label><input type="checkbox" id="AUTO_REATTEMPT"> Auto-Reattempt</label></div>
+<div class="row"><label>Scan Interval (ms)</label><input type="number" id="SCAN_INTERVAL" value="300"></div>
+</div>
+
+<div class="section">
+<h2>Features</h2>
+<div class="row"><label><input type="checkbox" id="ANSWER_KEY_ENABLED" checked> Answer Key (amauoed.com)</label></div>
+<div class="row"><label><input type="checkbox" id="WEB_SEARCH_ENABLED" checked> Web Search</label></div>
+<div class="row"><label><input type="checkbox" id="SHORT_ANSWER_ENABLED" checked> Short Answer</label></div>
+<div class="row"><label><input type="checkbox" id="MULTI_ENABLED" checked> Multi-Answer</label></div>
+<div class="row"><label><input type="checkbox" id="MATCHING_ENABLED" checked> Matching</label></div>
+<div class="row"><label><input type="checkbox" id="VISION_ENABLED" checked> Vision</label></div>
+</div>
+
+<button class="btn" id="saveBtn">Save Settings</button>
+<div class="section">
+<h2>Local Answer Bank</h2>
+<p id="answerBankCount" aria-live="polite">Stored questions: loading...</p>
+<button class="btn" id="exportQuestionBankBtn">Export Answer Bank (.json)</button>
+<button class="btn" id="importQuestionBankBtn">Import Answer Bank (.json)</button>
+<input type="file" id="importQuestionBankFile" accept="application/json,.json" hidden>
+</div>
+<div id="status"></div>
+
+<div class="section" id="githubSection">
+  <h2>GitHub Question Bank (Live Sync)</h2>
+  <div class="row"><label>Repository Owner</label><input type="text" id="GITHUB_BANK_OWNER" placeholder="owner"></div>
+  <div class="row"><label>Repository Name</label><input type="text" id="GITHUB_BANK_REPO" name="repo"></div>
+  <div class="row"><label>Bank Path (default: bank.json)</label><input type="text" id="GITHUB_BANK_PATH" value="bank.json"></div>
+  <div class="row"><label>Sync Token (leave empty for private repo with token auth)</label><input type="password" id="GITHUB_SYNC_TOKEN" placeholder="ghp_... or leave empty"></div>
+  <button class="btn" id="syncNowBtn">Sync Now</button>
+  <div id="syncStatus" style="margin-top: 8px; font-size: 12px; color: #888;"></div>
+</div>
+
+<script src="config.js"></script>
+<script src="storage.js"></script>
+<script src="options.js"></script>
+</body>
+</html>
