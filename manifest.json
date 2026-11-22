@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "Faithful reimplementation of the Python+Playwright Moodle quiz bot as a Manifest V3 extension.",
   "minimum_chrome_version": "114",
   "permissions": [
