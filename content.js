@@ -997,21 +997,24 @@ async function clickFinish() {
     return false;
   } catch(e) { return false; }
 }
-// Extract clean option text for a (possibly disabled) review input.
-function reviewAnswerText(inputOrRow) {
+// Extract clean option text for a (possibly disabled) review input. `doc` lets
+// the same code run on a fetched showall=1 document, where `label[for=…]` must
+// be looked up inside that document instead of the live page.
+function reviewAnswerText(inputOrRow, doc) {
   const node0 = inputOrRow;
   const strip = (node) => cleanNodeText(node, 'script, style, .icon, .feedbackicon, .grade, .state, .questionflag, .accesshide, .answernumber, .feedbackimage');
   let input = null;
   if (node0 && node0.tagName === 'INPUT') input = node0;
   else if (node0 && node0.querySelector) input = node0.querySelector('input[type="radio"], input[type="checkbox"]');
 
+  const lookupDoc = (input && input.ownerDocument) || (doc && doc.querySelector ? doc : document);
   let text = '';
   if (input) {
     const lbl = input.closest('label');
     if (lbl) text = strip(lbl);
     if (!text && input.id) {
       const id = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(input.id) : input.id.replace(/"/g, '\\"');
-      const forLabel = document.querySelector('label[for="' + id + '"]');
+      const forLabel = lookupDoc.querySelector('label[for="' + id + '"]');
       if (forLabel) text = strip(forLabel);
     }
   }
@@ -1275,11 +1278,17 @@ async function learnMatchingFromReview(container, containerCorrect, learned) {
     used.add(key);
     if (row.verified && row.answer) {
       try {
+        // `learned.new` is what the review scanner reports as newly saved.
+        const existing = await answerKeyGet(row.subStatement);
+        const known = Array.isArray(existing) && existing.some(
+          (hit) => hit && hit.verified === true && normText(hit.answer) === normText(row.answer)
+        );
         await answerKeyPut(row.subStatement, row.answer, 'learned-review', { verified: true, replaceVerified: true });
         saved += 1;
         if (learned) {
           learned.right += 1;
           learned.matching = (learned.matching || 0) + 1;
+          if (!known) learned.new = (learned.new || 0) + 1;
           if (row.deduced) learned.deduced = (learned.deduced || 0) + 1;
         }
         logHUD('success', 'Matching saved: row ' + row.rowIndex + (row.deduced ? ' (deduced)' : '') +
@@ -1301,87 +1310,117 @@ async function learnMatchingFromReview(container, containerCorrect, learned) {
   return saved;
 }
 
-async function learnFromReviewPage() {
-  const learned = { right: 0, wrong: 0, matching: 0, deduced: 0 };
-  const containers = Array.from(document.querySelectorAll('.que'));
-  for (const c of containers) {
+// ── Manual-answer review evidence (all formats) ─────────────────────────────
+// One review question -> the answers Moodle itself proved: disabled
+// radio/checkbox rows, typed text, textarea responses and dropdowns. The same
+// extractor runs on the live page and on a fetched showall=1 attempt.
+
+function reviewContainersIn(root) {
+  if (!root || !root.querySelectorAll) return [];
+  return Array.from(root.querySelectorAll('.que'))
+    .filter((que) => !que.parentElement || !que.parentElement.closest('.que'));
+}
+
+function reviewAnswerCollector(container) {
+  const right = [];
+  const wrong = [];
+  const seen = new Set();
+  const add = (list, value) => {
+    const text = normalizeReviewText(value);
+    const key = normText(text);
+    if (!text || !key || seen.has(key)) return '';
+    seen.add(key);
+    list.push(text);
+    return text;
+  };
+  return { right, wrong, add, optionOutcome: (el) => choiceRowOutcome(el, container) };
+}
+
+function reviewQuestionEvidence(container, containerCorrect) {
+  const ev = reviewAnswerCollector(container);
+
+  // 1) Authoritative correct-answer text rendered by Moodle.
+  for (const node of container.querySelectorAll('.rightanswer')) {
+    ev.add(ev.right, cleanRightAnswerText(node.textContent || node.innerText || ''));
+  }
+
+  // 2) Options the theme flagged correct: covers disabled inputs (every review
+  //    page input is disabled) and unselected correct options of a multi-select.
+  for (const input of container.querySelectorAll('input[type="radio"], input[type="checkbox"]')) {
+    if (input.value === '-1') continue;
+    if (ev.optionOutcome(input) !== 'right') continue;
+    ev.add(ev.right, reviewAnswerText(input));
+  }
+
+  // 3) The learner's own checked answer(s). ":checked" matches even when the
+  //    inputs are disabled, which is how Moodle 4.x renders a reviewed attempt.
+  for (const input of container.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked')) {
+    if (input.value === '-1') continue;
+    const text = reviewAnswerText(input);
+    const outcome = ev.optionOutcome(input);
+    if (outcome === 'right') { ev.add(ev.right, text); continue; }
+    if (outcome === 'wrong') { ev.add(ev.wrong, text); continue; }
+    if (containerCorrect === true) ev.add(ev.right, text);
+    else if (containerCorrect === false) ev.add(ev.wrong, text);
+  }
+  return ev;
+}
+
+async function learnFromReviewRoot(root, learned) {
+  const stats = learned || { right: 0, wrong: 0, matching: 0, deduced: 0, new: 0 };
+  if (typeof stats.new !== 'number') stats.new = 0;
+  for (const c of reviewContainersIn(root)) {
     const qText = qTxt(c);
     if (!qText) continue;
     const grade = parseGradeFromReview(c);
     const containerCorrect = grade && typeof grade.correct === 'boolean' ? grade.correct : null;
 
     // Matching questions are graded row by row: learn each (sub-statement,
-    // verified option) pair instead of running the single-answer path below.
+    // verified option) pair instead of treating the block as one answer.
     if (isMatchingBlock(c) && (matchingSelects(c).length || matchingRowElements(c).length)) {
-      await learnMatchingFromReview(c, containerCorrect, learned);
+      await learnMatchingFromReview(c, containerCorrect, stats);
       continue;
     }
 
-    const savedRight = new Set();
-    const savedWrong = new Set();
-    const saveRight = async (answer) => {
-      const value = normalizeReviewText(answer);
-      const signature = normText(value);
-      if (!signature || savedRight.has(signature)) return;
-      savedRight.add(signature);
-      await answerKeyPut(qText, value, 'learned-review', { verified: true });
-      learned.right++;
-    };
-    const saveWrong = async (answer) => {
-      const value = normalizeReviewText(answer);
-      const signature = normText(value);
-      if (!signature || savedWrong.has(signature)) return;
-      savedWrong.add(signature);
-      await wrongSet(qText, value);
-      learned.wrong++;
-    };
-    const optionOutcome = (el) => choiceRowOutcome(el, c);
+    const evidence = reviewQuestionEvidence(c, containerCorrect);
 
-    // 1) Authoritative correct-answer text rendered by Moodle ("The correct answer is: ...").
-    for (const rightAnswer of c.querySelectorAll('.rightanswer')) {
-      const answer = normalizeReviewText(rightAnswer.textContent || rightAnswer.innerText || '')
-        .replace(/^The correct answer is\s*:\s*/i, '')
-        .replace(/\.$/, '');
-      if (answer) await saveRight(answer);
-    }
-
-    // 2) Options flagged correct by the theme (covers multi-select even if unchecked).
-    for (const input of c.querySelectorAll('input[type="radio"], input[type="checkbox"]')) {
-      if (input.value === '-1') continue;
-      if (optionOutcome(input) !== 'right') continue;
-      const text = reviewAnswerText(input);
-      if (text) await saveRight(text);
-    }
-
-    // 3) The learner's own checked answer(s). ":checked" matches even when disabled (Moodle 4.x).
-    const checked = c.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked');
-    for (const input of checked) {
-      if (input.value === '-1') continue;
-      const text = reviewAnswerText(input);
-      if (!text) continue;
-      const rowResult = optionOutcome(input);
-      if (rowResult === 'right') { await saveRight(text); continue; }
-      if (rowResult === 'wrong') { await saveWrong(text); continue; }
-      if (containerCorrect === true) await saveRight(text);
-      else if (containerCorrect === false) await saveWrong(text);
-    }
-
-    // 4) Short-answer / typed responses (input value, or plain-text ".answer" rendering).
-    for (const input of c.querySelectorAll('input[type="text"]')) {
-      let answer = normalizeReviewText(input.value || '');
+    // 4) Typed responses: input[type=text]/number value, or the plain-text
+    //    answer Moodle renders for short answers and essays (textarea).
+    const typed = c.querySelectorAll('input[type="text"], input[type="number"], textarea');
+    for (const field of typed) {
+      let answer = normalizeReviewText(field.value || '');
       if (!answer) {
         const plain = c.querySelector('.answer .qtext, .answer p, .answer, .rightanswer');
-        if (plain) answer = normalizeReviewText(plain.textContent || '');
+        if (plain) answer = cleanRightAnswerText(plain.textContent || '');
       }
       if (!answer) continue;
-      const rowResult = optionOutcome(input);
-      if (rowResult === 'right' || containerCorrect === true) await saveRight(answer);
-      else if (rowResult === 'wrong' || containerCorrect === false) await saveWrong(answer);
+      const outcome = evidence.optionOutcome(field);
+      if (outcome === 'right' || containerCorrect === true) evidence.add(evidence.right, answer);
+      else if (outcome === 'wrong' || containerCorrect === false) evidence.add(evidence.wrong, answer);
     }
 
-    // 5) Two-option / True-False: when the attempt was wrong (earned === 0), the
+    // 5) Dropdowns outside a matching block: the option Moodle kept selected is
+    //    the submitted answer, proven by a correct row / correct question (and
+    //    only when Moodle did not already spell the right answer out above).
+    if (!isMatchingBlock(c)) {
+      for (const select of c.querySelectorAll('select')) {
+        if (select.closest('.im-controls, .submitbtns, .submitbuttons, .quiznavigation')) continue;
+        const option = select.options && select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+        const selected = normalizeReviewText(option ? (option.text || '') : '');
+        if (!selected || /^choose\b/i.test(selected)) continue;
+        if (!select.value || select.value === '0') continue;
+        const outcome = evidence.optionOutcome(select);
+        if (outcome === 'right' || (containerCorrect === true && !evidence.right.length)) {
+          evidence.add(evidence.right, selected);
+        } else if (outcome === 'wrong') {
+          evidence.add(evidence.wrong, selected);
+        }
+      }
+    }
+
+    // 6) Two-option / True-False: when the attempt was wrong (earned === 0), the
     //    opposite (unselected) option is the correct answer — save it as verified.
-    if (grade && grade.earned === 0) {
+    if (grade && grade.earned === 0 && !evidence.right.length) {
       const optionInputs = Array.from(c.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
         .filter((input) => input.value !== '-1');
       const optionTexts = [];
@@ -1397,23 +1436,174 @@ async function learnFromReviewPage() {
         if (selected.length === 1) {
           const other = optionTexts.find((t) => normText(t) !== normText(selected[0]));
           if (other) {
-            await saveRight(other);
-            learned.deduced += 1;
+            evidence.add(evidence.right, other);
+            stats.deduced += 1;
             logHUD('info', 'Deduced opposite answer for 2-option question: ' + other.slice(0, 40));
-            requestGitHubBankPush();
           }
         }
       }
     }
+
+    // Save with `{ verified: true, replaceVerified: true }`: a single-answer
+    // question retires stale verified hits for its prompt, while a multi-select
+    // question (2+ correct options) keeps every option so the next attempt can
+    // tick them all.
+    const replaceVerified = evidence.right.length === 1;
+    for (const answer of evidence.right) {
+      try {
+        const existing = await answerKeyGet(qText);
+        const known = Array.isArray(existing) && existing.some(
+          (hit) => hit && hit.verified === true && normText(hit.answer) === normText(answer)
+        );
+        await answerKeyPut(qText, answer, 'learned-review', { verified: true, replaceVerified });
+        stats.right += 1;
+        if (!known) stats.new += 1;
+      } catch (error) {
+        logHUD('warn', 'Could not save review answer: ' + error.message);
+      }
+    }
+
+    for (const answer of evidence.wrong) {
+      try {
+        await wrongSet(qText, answer);
+        stats.wrong += 1;
+      } catch (error) { /* the wrong cache is advisory */ }
+    }
   }
-  // Verified matching pairs are the most valuable bank entries (one clean key
-  // per sub-statement), so push them to the shared GitHub bank right away.
-  if (learned.matching > 0) {
-    logHUD('info', 'Matching review: saved ' + learned.matching + ' verified pair(s)' +
-      (learned.deduced ? ' (' + learned.deduced + ' deduced by elimination)' : ''));
-    requestGitHubBankPush();
+  return stats;
+}
+
+// ── Review scanner: auto-run + full-attempt (showall=1) coverage ────────────
+// Runs on every /mod/quiz/review.php load whether the bot is running, stopped,
+// or the answers were entered by hand. Paginated attempts are fetched once as
+// `?attempt=<id>&showall=1` so a single pass covers every question.
+
+const REVIEW_SHOWALL_RE = /(?:[?&])showall=1(?:&|$)/;
+const REVIEW_SCAN_SETTLE_MS = 1500;   // wait for late-rendered .que blocks
+const REVIEW_SCAN_SETTLE_TRIES = 4;
+
+function reviewAttemptId() {
+  try {
+    const attempt = new URLSearchParams(location.search || '').get('attempt');
+    if (attempt) return attempt;
+  } catch (error) { /* fall through to the regex */ }
+  const match = String(location.search || '').match(/[?&]attempt=(\d+)/);
+  return match ? match[1] : '';
+}
+
+function reviewShowsAll() {
+  return REVIEW_SHOWALL_RE.test(String(location.search || '') + '&');
+}
+
+function reviewHasPagination() {
+  try { return !!document.querySelector('a[href*="page="]'); } catch (error) { return false; }
+}
+
+function reviewShowAllUrl() {
+  const attempt = reviewAttemptId();
+  const query = attempt
+    ? '?attempt=' + encodeURIComponent(attempt) + '&showall=1'
+    : '?showall=1';
+  return location.origin + location.pathname + query;
+}
+
+// Background fetch of the whole attempt (same-origin cookies included). A login
+// page or an empty response yields null, so the live page is scanned instead.
+async function fetchReviewDoc(url) {
+  const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const html = await response.text();
+  if (!html || !/\bque\b/.test(html)) return null;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return reviewContainersIn(doc).length ? doc : null;
+}
+
+// Await the worker's GitHub sync so the scanner can report the outcome.
+function syncGitHubBankNow() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: 'SYNC_GITHUB_BANK' }, (resp) => {
+        if (chrome.runtime.lastError) { resolve({ error: chrome.runtime.lastError.message }); return; }
+        resolve(resp || {});
+      });
+    } catch (error) {
+      resolve({ error: error.message });
+    }
+  });
+}
+
+async function doReviewScan() {
+  const learned = { right: 0, wrong: 0, matching: 0, deduced: 0, new: 0 };
+  logHUD('info', 'Review scan: checking all answers...');
+
+  let root = document;
+  if (!reviewShowsAll() && reviewHasPagination()) {
+    try {
+      const fullDoc = await fetchReviewDoc(reviewShowAllUrl());
+      if (fullDoc) root = fullDoc;
+      else logHUD('warn', 'Review scan: full attempt returned no questions, using this page');
+    } catch (error) {
+      logHUD('warn', 'Review scan: could not load the full attempt (' + error.message + ')');
+    }
+  }
+
+  // Moodle may still be painting the .que blocks when the scan is triggered.
+  for (let attempt = 0; attempt < REVIEW_SCAN_SETTLE_TRIES && !reviewContainersIn(root).length; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, REVIEW_SCAN_SETTLE_MS));
+  }
+  if (!reviewContainersIn(root).length) {
+    logHUD('info', 'Review scan: no questions to check on this page');
+    return learned;
+  }
+
+  await learnFromReviewRoot(root, learned);
+  await flushNow();
+  logHUD('success', 'Review scan: verified & saved ' + learned.right + ' answers (' + learned.new + ' new)');
+
+  const sync = await syncGitHubBankNow();
+  if (!sync || (!sync.status && !sync.error)) return learned;
+  if (sync.error) {
+    logHUD('warn', 'GitHub sync: ' + sync.error);
+  } else if (sync.status === 'ok') {
+    logHUD('success', learned.new > 0
+      ? 'GitHub sync: +' + learned.new + ' pushed ✓'
+      : 'GitHub sync: up to date ✓');
+  } else if (sync.status === 'skipped') {
+    logHUD('info', 'GitHub sync: skipped (GitHub bank not configured)');
   }
   return learned;
+}
+
+let _reviewScanHref = '';
+let _reviewScanPromise = null;
+
+// Deduplicated entry point: one scan per review URL. A reload re-scans, and the
+// automatic boot scan and the bot loop share the same in-flight promise.
+function runReviewScan(options) {
+  const href = String(location.href || '');
+  if (_reviewScanPromise && _reviewScanHref === href) return _reviewScanPromise;
+  if (!(options && options.force) && _reviewScanHref === href) return Promise.resolve(null);
+  _reviewScanHref = href;
+  _reviewScanPromise = doReviewScan()
+    .catch((error) => {
+      logHUD('warn', 'Review scan failed: ' + error.message);
+      return null;
+    })
+    .then((result) => {
+      _reviewScanPromise = null;
+      return result;
+    });
+  return _reviewScanPromise;
+}
+
+// Boot hook: review pages scan themselves — stopped or not, manual or not.
+function maybeAutoReviewScan() {
+  try {
+    if (!isReviewPage()) return;
+    setTimeout(() => { runReviewScan(); }, 1200);
+  } catch (error) {
+    logHUD('warn', 'Review scan could not start: ' + error.message);
+  }
 }
 
 // ── Review-page answer extraction (live page + fetched grade pages) ─────────
@@ -2100,14 +2290,9 @@ async function startLoop() {
         if (pageId !== reviewPageHandled) {
           reviewPageHandled = pageId;
           try {
-            const learned = await learnFromReviewPage();
-            logHUD('info', `Review page: learned ${learned.right} right, ${learned.wrong} wrong` +
-              (learned.matching ? `, ${learned.matching} matching pair(s)` : '') +
-              (learned.deduced ? `, ${learned.deduced} deduced` : ''));
-            if (learned.right > 0) {
-              await flushNow();
-              requestGitHubBankPush();
-            }
+            // Shared with the boot-time auto scan: one deduplicated pass that
+            // learns every verified answer, then reports the GitHub sync.
+            await runReviewScan();
           } catch (error) {
             logHUD('error', 'Review page learning failed: ' + error.message);
           }
@@ -2172,6 +2357,8 @@ document.addEventListener('DOMContentLoaded', () => {
   createHUD();
   logHUD('info', 'Moodle Quiz Bot loaded');
   startAutoHarvest();
+  // Review pages scan themselves, whether the bot is running or stopped.
+  maybeAutoReviewScan();
   // Auto-start checked via startLoop which checks BOT_ENABLED
   chrome.storage.sync.get('BOT_ENABLED', (r) => {
     if (r.BOT_ENABLED !== false) startLoop();
@@ -2183,6 +2370,7 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
   loadConfig().then(() => {
     createHUD();
     startAutoHarvest();
+    maybeAutoReviewScan();
     chrome.storage.sync.get('BOT_ENABLED', (r) => {
       if (r.BOT_ENABLED !== false) startLoop();
     });

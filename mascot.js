@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
-   mascot.js — standalone, self-aware roaming 4-cat mascot for the Quiz Bot.
+   mascot.js — one global pixel-art cat for the Quiz Bot.
 
    HARD RULE: this file never touches quiz logic. It cannot click, submit,
    navigate or block anything:
@@ -11,32 +11,43 @@
        disable the mascot — quiz solving, review learning and GitHub bank
        syncing keep running exactly as in previous version/content.js.
 
-   States:
-     idle      mascot/idle.gif      roams the bottom/side edges every 5–7 s,
-                                    random cat quotes every 6–8 s (petting lines on click)
-     thinking  mascot/thinking.png  "Reading the question... 👀"
-                                  → "Hmm... let me think 🤔"
-     answering mascot/answering.gif "AHA!! Found it! ✨" (~0.8 s reaction)
-     clicking  mascot/clicking.gif  "Slapping that answer!! 🐾💥" (1.1 s) parked on the
-                                   exact radio dot / checkbox the bot ticked, then a hop to the
-                                   next page button
-     nextpage  mascot/clicking.gif  "Next page!! 🐾➡️" (1.1 s) directly left of the visible
-                                   Next page button, facing right so the paw lands on it
-                                   (visual only), then idle roaming
-     typing    mascot/typing.gif    "Typing the answer... ⌨️🐾" (2.5 s, then idle)
-                                   fill-in-the-blank / short-answer box filled
-     harvesting mascot/harvesting.gif "Digging up answers... 🐾⛏️" while the HUD streams
-                                   harvest progress → "Scooped X answers!! 🐟✨", then a
-                                   smooth idle 2 s after the last harvest line
-                                   (auto-falls back to idle.gif if the GIF is missing)
-     review    mascot/review.gif    "Checking your score... 👀"
-                                  → "Learned X right! Purrfect 🎓"
+   PIXEL ENGINE (no images): a 96×96 <canvas> with `image-rendering: pixelated`
+   draws hand-plotted 24×24 pixel-matrix frames at ~7 FPS. Every state is pure
+   JS (tail wag, blink, ear twitch, trot cycle, glasses, laptop, pickaxe…), so
+   the mascot weighs nothing and never waits on a download.
+
+   ONE cat, every tab ("Global presence" below): a single `MASCOT_PRESENCE`
+   record in chrome.storage.local names the owning tab. The tab that is working
+   owns the cat and every other tab hides him, showing a small
+   "Cat is working on another tab..." pill instead; an idle cat follows whichever
+   tab the user is actually looking at, naps after 35 s of stillness, and wakes
+   the moment it is clicked or a quiz/harvest starts.
+
+   States (all drawn by the pixel engine):
+     idle       roams the bottom/side edges every 5–7 s (tail wag, blink, ear
+                twitch), random cat quotes every 6–8 s (petting lines on click)
+     walk       4-frame trot while gliding somewhere; flips scaleX(-1) when
+                moving left
+     nap        curls into a ball with rising pixel Zzz after 35 s of stillness
+     thinking   "Reading the question... 👀" → "Hmm... let me think 🤔"
+                (paw on chin + floating ... / ?)
+     answering  "AHA!! Found it! ✨" (~0.8 s happy hop, pixel ! + sparkles)
+     clicking   paw-slap onto the exact radio dot / checkbox, then a hop to the
+                Next page button (input[name="next"])
+     nextpage   "Next page!! 🐾➡️" (1.1 s) paw-slap on the blue button
+     typing     tiny pixel laptop with alternating paw-tapping frames
+     harvesting pickaxe swinging with flying pixel star particles while the HUD
+                streams harvest progress → "Scooped X answers!! 🐟✨"
+     review     pixel reading glasses slide onto the eyes (white lens glint); the
+                cat glides down the .que blocks of /mod/quiz/review.php while
+                content.js scans, showing "Scanned! Saved X answers (Y new) •
+                GitHub ✓" in the bubble
 
    Interaction (all cosmetic — none of it can reach quiz logic):
      click          playful petting line from PET_LINES (shuffle-no-repeat)
-     double-click   1.8 s answering.gif cheer from HYPE_LINES → back to the state
+     double-click   1.8 s answering cheer from HYPE_LINES → back to the state
      mouseenter     occasional curious hint from HOVER_LINES (12 s cooldown)
-     low timer      on /attempt.php, ≤5 min left → review.gif + "HALA!! ..." alarm
+     low timer      on /attempt.php, ≤5 min left → review pose + "HALA!! ..." alarm
      review score   .quizreviewsummary ≥90% / ≥75% / <75% celebration lines
 
    ───────────────────────────────────────────────────────────────────────────── */
@@ -50,6 +61,7 @@ try {
     const IMG_CLASS = 'qb-mascot-img';
     const BUBBLE_ID = 'qb-mascot-bubble';
     const STYLE_ID = 'qb-mascot-style';
+    const PILL_ID = 'qb-mascot-pill';
     const HUD_HOST_ID = 'moodle-quiz-bot-hud';
 
     const SIZE = 130;        // px — square cat
@@ -61,25 +73,20 @@ try {
     // wider than the 130 px cat, so the wider of the two drives the clamp.
     const MASCOT_WIDTH = Math.max(SIZE, BUBBLE_MAX);
 
-    const ASSETS = {
-      idle: 'mascot/idle.gif',
-      thinking: 'mascot/thinking.png',
-      answering: 'mascot/answering.gif',
-      clicking: 'mascot/clicking.gif',
-      nextpage: 'mascot/clicking.gif', // same slap GIF, different bubble + target
-      typing: 'mascot/typing.gif',
-      harvesting: 'mascot/harvesting.gif', // digging GIF; idle.gif is the fallback
-      review: 'mascot/review.gif',
-    };
+    // Every state the pixel engine can draw. `walk` and `nap` are rendered from
+    // idle/catnap flags rather than set through setState(), but they still live
+    // here so the external `qb-mascot-state` hook can play them.
+    const STATES = [
+      'idle', 'walk', 'nap', 'thinking', 'answering',
+      'clicking', 'nextpage', 'typing', 'harvesting', 'review',
+    ];
 
-    // If a GIF is not shipped yet (or fails to decode), the state still plays -
-    // it just borrows this fallback asset, so `harvesting` keeps its bubble and
-    // GIF-frame timing on idle.gif instead of dropping the whole animation.
-    const ASSET_FALLBACKS = { harvesting: 'idle' };
-    const brokenAssets = new Set();
+    function isKnownState(state) {
+      return STATES.indexOf(String(state || '')) >= 0;
+    }
 
-    // The two "action" GIFs replay the exact move the bot just made: slapping a
-    // radio/checkbox/dropdown option, or typing into a fill-in-the-blank box.
+    // The two "action" animations replay the exact move the bot just made:
+    // slapping a radio/checkbox/dropdown option, or typing into a text box.
     const ACTION_STATES = ['clicking', 'typing'];
 
     const SPEECH = {
@@ -191,6 +198,22 @@ try {
       'Double-click me if you need hype 🔥',
     ];
 
+    // Catnap + global-presence dialogs. A napping cat mumbles NAP_LINES, wakes
+    // with WAKE_LINE, and the idle cat greets the tab it just followed with
+    // FOLLOW_LINES (all drawn through pickFreshLine, so nothing repeats).
+    const NAP_LINES = [
+      'Zzz... taking a quick catnap 💤🐾',
+      'Dreaming of 100% exam scores... 🐟💤',
+      'Wake me up when the next quiz starts~ 😴',
+    ];
+
+    const WAKE_LINE = 'Yawn~ Ready to work!! 🐾✨';
+
+    const FOLLOW_LINES = [
+      'Meow! Followed you over here~ 🐾',
+      'Done working! What are we doing on this tab? 👀',
+    ];
+
     const PANIC_LINE = 'HALA!! Under 5 mins left!! ⏰🙀';
 
     const SCORE_HIGH_LINES = [
@@ -211,8 +234,8 @@ try {
       'Charge to experience, saved the rights 📖🐾',
     ];
 
-    const CHEER_MS = 1800;             // double-click answering.gif cheer
-    const PANIC_HOLD_MS = 3200;        // low-timer review.gif alarm
+    const CHEER_MS = 1800;             // double-click answering cheer
+    const PANIC_HOLD_MS = 3200;        // low-timer review alarm
     const TIMER_CHECK_MS = 10000;      // #quiz-time-left poll cadence
     const TIMER_PANIC_SECONDS = 300;   // "under 5 mins left" threshold
     const HOVER_COOLDOWN_MS = 12000;   // hover hints at most once per 12 s
@@ -226,9 +249,9 @@ try {
     const QUOTE_SPREAD_MS = 2000;
     const READING_HOLD_MS = 1600;    // "Reading the question..." → "Hmm..."
     const ANSWER_REACT_MS = 800;     // "AHA!! Found it! ✨" → clicking / typing
-    const SLAP_HOLD_MS = 1100;       // clicking.gif on the exact dot → Next page hop
+    const SLAP_HOLD_MS = 1100;       // clicking pose on the exact dot → Next page hop
     const NEXT_HOP_MS = 1100;        // "Next page!!" hop beside the button → idle
-    const ACTION_HOLD_MS = 2500;     // typing.gif → idle (clicking uses SLAP_HOLD_MS)
+    const ACTION_HOLD_MS = 2500;     // typing pose → idle (clicking uses SLAP_HOLD_MS)
     const TARGET_LIFT = 40;          // px — sit this far above the target's top edge
     const NEXT_OFFSET_X = 140;       // px — park this far left of the Next page button
     const NEXT_OFFSET_Y = 45;        // px — park this far above the Next page button
@@ -236,14 +259,54 @@ try {
     const TICK_MS = 1500;            // read-only state reconciliation
     const MUTATION_DEBOUNCE_MS = 220;
     const ANSWER_THROTTLE_MS = 800;
-    const HARVEST_HOLD_MS = 2000;    // harvest GIF lingers 2 s after the last line
+    const HARVEST_HOLD_MS = 2000;    // harvest animation lingers 2 s after the last line
     const HARVEST_STALE_MS = 20000;  // safety: 20 s of silence → back to idle
     const CONTROL_HINT_MS = 2000;    // how long the last answer control stays "fresh"
+    const REVIEW_GLIDE_MS = 1100;    // review scan: hop between .que blocks
+    const REVIEW_SCAN_MAX_MS = 45000; // safety: never glide forever
+
+    /* ── One-cat presence + catnap tuning ─────────────────────────────────── */
+
+    const PRESENCE_KEY = 'MASCOT_PRESENCE';
+    const PRESENCE_STALE_MS = 15000;       // a busy claim older than this is ignored
+    const PRESENCE_HEARTBEAT_MS = 4000;    // the busy owner keeps updatedAt fresh
+    const PRESENCE_INIT_TIMEOUT_MS = 2500; // chrome never answered → single-tab mode
+    const WORK_LOCK_MS = 20000;            // a quiz run / harvest stays "active" this long
+    // Session-level work lock (see `_activeWorkUntil`): a quiz run and a harvest
+    // keep streaming these HUD lines question after question. Between two answers
+    // `syncPresenceForState('idle')` briefly publishes an idle record, so without
+    // the lock a freshly focused tab would steal the cat mid-exam. Both patterns
+    // are anchored at the line start: harvest lines are spelled out (a bare
+    // /harvest/ would match the "…or use Harvest Page." boot banner) and a quiz
+    // question such as "Q: What is a stop sign?" must never end the run.
+    const WORK_START_RE = /^(?:bot started|q:|question:|option\s*\d|selected\b|matched\b|typed\b|all answered|harvest\s+"|auto-harvesting answers|scanning grade report|review harvest|answer harvesting is running)/;
+    const WORK_END_RE = /^(?:bot stopped|stop(?:ped)?\b|quiz complete|review scan:|harvested)/;
+    const PILL_TEXT = '🐾 Cat is working on another tab...';
+    const WORK_PILL_TEXT = '🐾 Cat is busy working on another tab...';
+    const PILL_CLASS = 'qb-pill-visible';
+    const NAP_CLASS = 'qb-napping';
+    const NAP_AFTER_MS = 35000;            // idle + no interaction for 35 s → catnap
+    const NAP_TICK_MS = 3000;              // how often stillness is checked
+    const NAP_QUOTE_MIN_MS = 11000;        // sleepy mumbling cadence while napping
+    const NAP_QUOTE_SPREAD_MS = 4000;
+
+    // Every state in this map means "the cat is busy here" for Rule A. The label
+    // is stored in MASCOT_PRESENCE.busyLabel so other tabs could show it later.
+    const BUSY_LABELS = {
+      thinking: 'reading a question',
+      answering: 'answering a question',
+      clicking: 'clicking an answer',
+      typing: 'typing an answer',
+      nextpage: 'moving to the next page',
+      harvesting: 'harvesting answers',
+      review: 'checking the score',
+    };
+
 
     /* ── Module state ─────────────────────────────────────────────────────── */
 
     let wrapEl = null;
-    let imgEl = null;
+    let catEl = null;
     let bubbleEl = null;
 
     let currentState = 'idle';
@@ -276,7 +339,22 @@ try {
     let reviewParked = false;
     let booted = false;
 
-    let overlayTimer = null;   // cheer / panic GIF restore timer
+    // Visual review scanner: content.js streams "Review scan: ..." and
+    // "GitHub sync: ..." HUD lines; the cat wears glasses, glides down the .que
+    // blocks and shows the live counts in its bubble. It only ever narrates —
+    // content.js owns the scanning, saving and syncing.
+    const reviewScan = {
+      active: false,
+      startedAt: 0,
+      right: null,
+      newCount: null,
+      github: '',
+      timer: null,
+      stopTimer: null,
+      index: 0,
+    };
+
+    let overlayTimer = null;   // cheer / panic overlay restore timer
     let overlayState = '';     // '' | 'answering' | 'review'
     let timerCheck = null;     // 10 s #quiz-time-left poll
     let panicWarned = false;   // one low-timer alarm per attempt
@@ -284,6 +362,32 @@ try {
     let lastPetAt = 0;
     let scoreAnnounced = false;
     let lastScoreLine = '';    // celebration line, re-shown when the cat is petted
+
+    // One-cat presence: which tab owns the cat, what it is doing, and when the
+    // record was last touched (Rule A ignores busy claims older than 15 s).
+    let myTabId = null;
+    let presenceEnabled = false;   // false → single-tab fallback (no storage/tab id)
+    let presenceReady = false;     // the first read finished: show/hide is safe now
+    let presenceWatched = false;
+    let presence = normalizePresence(null);
+    let presenceHeartbeat = null;
+    let pillEl = null;
+    let lastStaleRecoveryAt = 0;
+    // Session-level work lock: `Date.now() + WORK_LOCK_MS` while a quiz run or a
+    // harvest is in progress on this tab, 0 otherwise. It bridges the idle gap
+    // between two questions and is mirrored into MASCOT_PRESENCE.workLockUntil so
+    // the other tabs can honour it without polling this one.
+    let _activeWorkUntil = 0;
+    let lastWorkLockPushAt = 0;
+    let sawOtherTabWorking = false;  // the other owner was busy; waiting to hand back
+
+    // Catnap: `napping` drives the sleepy CSS mood; `lastInteractionAt` is the
+    // newest real user action (page or mascot) that keeps him awake.
+    let napping = false;
+    let napTickTimer = null;
+    let napQuoteTimer = null;
+    let lastInteractionAt = Date.now();
+
 
     const answeredKeys = new Set();
     const warned = new Set();
@@ -297,34 +401,14 @@ try {
       try { console.warn('[Mascot] ' + message); } catch (e) { /* never throw */ }
     }
 
-    function assetUrl(path) {
-      try {
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
-          return chrome.runtime.getURL(path);
-        }
-      } catch (error) { /* invalidated extension context — fall through */ }
-      return path;
-    }
-
-    // Which key actually renders for `state`: the real asset, or its fallback
-    // once the file is known to be missing/broken (harvesting → idle), so the
-    // state keeps its bubble and hop even when mascot/harvesting.gif is absent.
-    function renderKeyFor(state) {
-      const key = ASSETS[state] ? state : 'idle';
-      if (!brokenAssets.has(ASSETS[key])) return key;
-      const fallback = ASSET_FALLBACKS[key];
-      if (fallback && ASSETS[fallback] && !brokenAssets.has(ASSETS[fallback])) return fallback;
-      return key;
-    }
-
-    // Point the <img> at `state`'s asset, remembering the exact path in
-    // dataset.asset so onAssetError() knows which file failed to load.
+    // The canvas repaints from module state every frame; this only records the
+    // logical state and forces an immediate repaint, so a new animation appears
+    // without waiting for the next ~7 FPS tick.
     function applyAsset(state) {
-      if (!imgEl) return;
-      const key = renderKeyFor(state);
-      imgEl.dataset.state = state;
-      imgEl.dataset.asset = ASSETS[key];
-      imgEl.src = assetUrl(ASSETS[key]);
+      if (!catEl) return;
+      const key = isKnownState(state) ? state : 'idle';
+      catEl.dataset.state = key;
+      try { drawCatFrame(renderState(), frameTick); } catch (error) { warnOnce('pixel-draw', error); }
     }
 
     function clamp(value, min, max) {
@@ -355,6 +439,390 @@ try {
       }
     }
 
+    /* ── 2D pixel-art cat engine (pure JS, no image assets) ───────────────── */
+
+    const GRID = 24;         // logical 24 × 24 sprite matrix
+    const CANVAS = 96;       // <canvas width/height> = 4 device px per sprite px
+    const FRAME_MS = 143;    // ≈ 7 FPS pixel animation
+
+    const P = {
+      outline: '#241a16',
+      fur: '#f5a15c',
+      furDark: '#d67b36',
+      white: '#fff4e6',
+      pink: '#ff9fb2',
+      nose: '#e2688a',
+      eye: '#3ddc84',
+      pupil: '#1b2430',
+      metal: '#a8bccf',
+      wood: '#a9713f',
+      gold: '#ffd166',
+      lens: 'rgba(150, 226, 255, 0.30)',
+      screen: '#123047',
+      code: '#7ef0c0',
+    };
+
+    let ctx = null;
+    let frameTick = 0;
+    let frameTimer = null;
+    let walkUntil = 0;       // idle + still gliding → play the trot cycle
+
+    function px(x, y, color, w, h) {
+      if (!ctx) return;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, w == null ? 1 : w, h == null ? 1 : h);
+    }
+
+    function clearSprite() {
+      if (ctx) ctx.clearRect(0, 0, GRID, GRID);
+    }
+
+    // One blob = stacked rows: each row's edge pixels become the outline and the
+    // inside stays fur, so silhouettes read as rounded pixel art at 24 px.
+    function drawBlob(rows, dy, fill, outline) {
+      const edge = outline || P.outline;
+      const lift = dy || 0;
+      for (let i = 0; i < rows.length; i += 1) {
+        px(rows[i].x, rows[i].y + lift, edge, rows[i].w, 1);
+      }
+      for (let i = 1; i < rows.length - 1; i += 1) {
+        if (rows[i].w > 2) px(rows[i].x + 1, rows[i].y + lift, fill, rows[i].w - 2, 1);
+      }
+    }
+
+    const BODY_ROWS = [
+      { y: 13, x: 9, w: 6 },
+      { y: 14, x: 8, w: 8 },
+      { y: 15, x: 7, w: 10 },
+      { y: 16, x: 7, w: 10 },
+      { y: 17, x: 7, w: 10 },
+      { y: 18, x: 7, w: 10 },
+      { y: 19, x: 7, w: 10 },
+      { y: 20, x: 8, w: 8 },
+      { y: 21, x: 9, w: 6 },
+    ];
+
+    const HEAD_ROWS = [
+      { y: 5, x: 8, w: 8 },
+      { y: 6, x: 7, w: 10 },
+      { y: 7, x: 6, w: 12 },
+      { y: 8, x: 6, w: 12 },
+      { y: 9, x: 6, w: 12 },
+      { y: 10, x: 6, w: 12 },
+      { y: 11, x: 6, w: 12 },
+      { y: 12, x: 7, w: 10 },
+      { y: 13, x: 8, w: 8 },
+    ];
+
+    // Four tail poses: the wag cycle of the idle / walk loop.
+    const TAIL_PHASES = [
+      [[17, 18], [18, 17], [19, 16], [20, 15], [21, 14], [21, 13]],
+      [[17, 18], [18, 18], [19, 17], [20, 17], [21, 16], [22, 16]],
+      [[17, 19], [18, 19], [19, 18], [20, 18], [21, 18], [21, 17]],
+      [[17, 18], [18, 17], [19, 17], [20, 16], [21, 15], [22, 15]],
+    ];
+
+    function drawTail(phase, dy) {
+      const tail = TAIL_PHASES[phase % TAIL_PHASES.length];
+      for (let i = 0; i < tail.length; i += 1) px(tail[i][0], tail[i][1] + dy, P.outline, 2, 2);
+      for (let i = 0; i < tail.length; i += 1) px(tail[i][0], tail[i][1] + dy, P.fur, 1, 1);
+      const tip = tail[tail.length - 1];
+      px(tip[0] + 1, tip[1] + dy, P.furDark);
+    }
+
+    function drawEars(dy, twitch) {
+      const lift = twitch ? -1 : 0;
+      px(7, 2 + dy + lift, P.outline, 2, 1);
+      px(6, 3 + dy + lift, P.outline, 4, 1);
+      px(6, 4 + dy, P.outline, 4, 1);
+      px(7, 3 + dy + lift, P.pink);
+      px(7, 4 + dy, P.pink, 2, 1);
+      px(15, 2 + dy + lift, P.outline, 2, 1);
+      px(14, 3 + dy + lift, P.outline, 4, 1);
+      px(14, 4 + dy, P.outline, 4, 1);
+      px(16, 3 + dy + lift, P.pink);
+      px(15, 4 + dy, P.pink, 2, 1);
+    }
+
+    // Eyes / muzzle / whiskers. `happy` → closed ^ ^ eyes, `focus` → looking down
+    // (reading glasses), `blink` → flat lines.
+    function drawFace(dy, opts) {
+      const o = opts || {};
+      px(9, 6 + dy, P.furDark, 2, 1);
+      px(14, 6 + dy, P.furDark, 1, 1);
+      px(10, 10 + dy, P.white, 4, 3);
+      px(11, 10 + dy, P.nose, 2, 1);
+      px(11, 11 + dy, P.outline, 2, 1);
+      px(4, 10 + dy, P.white, 2, 1);
+      px(18, 10 + dy, P.white, 2, 1);
+      px(5, 11 + dy, P.white, 1, 1);
+      px(19, 11 + dy, P.white, 1, 1);
+      if (o.happy) {
+        px(9, 9 + dy, P.outline, 2, 1);
+        px(9, 8 + dy, P.outline, 1, 1);
+        px(13, 9 + dy, P.outline, 2, 1);
+        px(14, 8 + dy, P.outline, 1, 1);
+      } else if (o.blink) {
+        px(9, 9 + dy, P.outline, 2, 1);
+        px(13, 9 + dy, P.outline, 2, 1);
+      } else {
+        px(9, 8 + dy, P.eye, 2, 2);
+        px(13, 8 + dy, P.eye, 2, 2);
+        const pupilRow = 8 + dy + (o.focus ? 1 : 0);
+        px(9, pupilRow, P.pupil);
+        px(14, pupilRow, P.pupil);
+        px(10, 8 + dy, P.white);
+        px(13, 8 + dy, P.white);
+      }
+    }
+
+    function drawPaws(dy, walking, step) {
+      const leftLift = walking && step % 2 === 0 ? 1 : 0;
+      const rightLift = walking && step % 2 === 1 ? 1 : 0;
+      px(8, 19 + dy - leftLift, P.outline, 4, 3);
+      px(9, 20 + dy - leftLift, P.white, 2, 1);
+      px(13, 19 + dy - rightLift, P.outline, 4, 3);
+      px(14, 20 + dy - rightLift, P.white, 2, 1);
+    }
+
+    function drawSparkle(x, y, color, big) {
+      px(x, y, color);
+      px(x - 1, y + 1, color);
+      px(x + 1, y + 1, color);
+      px(x, y + 2, color);
+      if (big) { px(x, y - 1, color); px(x, y + 3, color); }
+    }
+
+    // Tiny pixel "Z": top bar, diagonal, bottom bar.
+    function drawZ(x, y, size, color) {
+      px(x, y, color, size, 1);
+      for (let i = 1; i < size - 1; i += 1) px(x + size - 1 - i, y + i, color);
+      px(x, y + size - 1, color, size, 1);
+    }
+
+    // Catnap: a curled ball with a resting head, folded ears and rising Zzz.
+    function drawNap(tick) {
+      drawBlob([
+        { y: 16, x: 7, w: 11 },
+        { y: 17, x: 6, w: 13 },
+        { y: 18, x: 5, w: 15 },
+        { y: 19, x: 5, w: 15 },
+        { y: 20, x: 6, w: 13 },
+        { y: 21, x: 7, w: 11 },
+      ], 0, P.fur);
+      drawBlob([
+        { y: 12, x: 8, w: 9 },
+        { y: 13, x: 7, w: 11 },
+        { y: 14, x: 7, w: 11 },
+        { y: 15, x: 8, w: 9 },
+      ], 0, P.fur);
+      // folded ears + closed eyes + nose
+      px(7, 11, P.outline, 2, 1);
+      px(8, 11, P.pink);
+      px(16, 11, P.outline, 2, 1);
+      px(16, 11, P.pink);
+      px(9, 14, P.outline, 2, 1);
+      px(14, 14, P.outline, 2, 1);
+      px(12, 15, P.nose, 2, 1);
+      // tail wrapped around the front of the ball
+      px(5, 19, P.outline, 3, 2);
+      px(5, 19, P.fur, 2, 1);
+      px(17, 19, P.outline, 3, 2);
+      px(18, 19, P.fur, 2, 1);
+      // Zzz drifting up, two sizes
+      const rise = tick % 3;
+      drawZ(17, 10 - rise, 3, P.white);
+      drawZ(20, 6 - rise, 2, P.gold);
+    }
+
+    function drawBody(dy, walking) {
+      drawBlob(BODY_ROWS, dy, P.fur);
+      // chest fluff + side stripes
+      px(11, 15 + dy, P.white, 2, 3);
+      px(8, 16 + dy, P.furDark, 1, 2);
+      px(15, 16 + dy, P.furDark, 1, 2);
+      if (walking) px(9, 21 + dy, P.furDark, 2, 1);
+    }
+
+    // Paw on chin + floating "..." (and a "?" every other beat).
+    function drawThinking(tick, dy) {
+      px(12, 12 + dy, P.outline, 4, 3);
+      px(13, 13 + dy, P.white, 2, 1);
+      const phase = Math.floor(tick / 2) % 4;
+      for (let i = 0; i < 3; i += 1) {
+        px(18 + i * 2, 6 + dy - (phase === i ? 1 : 0), i <= phase ? P.gold : P.white);
+      }
+      if (Math.floor(tick / 12) % 2 === 0) {
+        px(19, 2 + dy, P.gold, 3, 1);
+        px(21, 3 + dy, P.gold);
+        px(20, 4 + dy, P.gold);
+        px(20, 6 + dy, P.gold);
+      }
+    }
+
+    // "AHA!!": hop + pixel "!" + a sparkle burst.
+    function drawExcited(tick, dy) {
+      px(19, 1 + dy, P.gold, 2, 4);
+      px(19, 6 + dy, P.gold, 2, 2);
+      const on = tick % 2 === 0;
+      drawSparkle(4, 6 + dy + (on ? 0 : 1), P.white);
+      drawSparkle(21, 12 + dy + (on ? 1 : 0), P.gold);
+      drawSparkle(6, 16 + dy + (on ? 1 : 0), P.gold);
+    }
+
+    // Paw-slap onto the exact radio dot (clicking) or the Next page button.
+    function drawSlap(tick, dy, nextPage) {
+      const hit = tick % 2 === 0;
+      const dotX = nextPage ? 18 : 17;
+      const dotY = nextPage ? 16 : 18;
+      px(13, dotY - 3 + dy + (hit ? 1 : 0), P.outline, 4, 3);
+      px(14, dotY - 2 + dy + (hit ? 1 : 0), P.white, 2, 1);
+      px(dotX, dotY + dy, P.outline, 5, 4);
+      px(dotX + 1, dotY + 1 + dy, nextPage ? P.eye : P.gold, 3, 2);
+      if (hit) drawSparkle(dotX + 2, dotY - 2 + dy, P.white, true);
+    }
+
+    // Tiny laptop: screen in front of the chest, paws tapping the keys.
+    function drawLaptop(tick, dy) {
+      const tap = tick % 2 === 0;
+      px(5, 13 + dy, P.outline, 14, 6);
+      px(6, 14 + dy, P.screen, 12, 4);
+      px(7, 15 + dy, P.code, 5, 1);
+      px(7, 16 + dy, P.code, 8, 1);
+      px(4, 19 + dy, P.outline, 16, 3);
+      px(5, 20 + dy, P.metal, 14, 1);
+      px(7, 20 + dy - (tap ? 0 : 1), P.white, 3, 2);
+      px(14, 20 + dy - (tap ? 1 : 0), P.white, 3, 2);
+    }
+
+    // Pickaxe swinging + flying pixel star particles.
+    function drawPickaxe(tick, dy) {
+      const phases = [
+        { ex: 20, ey: 9, hx: 20, hy: 8 },
+        { ex: 18, ey: 11, hx: 18, hy: 10 },
+        { ex: 15, ey: 13, hx: 14, hy: 12 },
+      ];
+      const phase = phases[Math.floor(tick / 3) % phases.length];
+      const steps = 6;
+      for (let i = 0; i <= steps; i += 1) {
+        const t = i / steps;
+        px(Math.round(16 + (phase.ex - 16) * t), Math.round(18 + (phase.ey - 18) * t) + dy, P.wood);
+      }
+      px(phase.hx, phase.hy + dy, P.metal, 3, 2);
+      px(15, 17 + dy, P.white, 2, 1); // paw holding the handle
+      if (tick % 2 === 0) {
+        drawSparkle(phase.hx + 3, phase.hy + dy + 1, P.white);
+        drawSparkle(4, 8 + (tick % 4), P.gold);
+      } else {
+        drawSparkle(phase.hx - 2, phase.hy + dy + 2, P.gold);
+      }
+    }
+
+    // Reading glasses over the eyes: they drop onto the muzzle over ~350 ms, then
+    // a white glint sweeps across both lenses while the scan runs.
+    function drawGlasses(tick) {
+      let drop = 0;
+      const startedAt = reviewScan.active ? reviewScan.startedAt : reviewStartedAt;
+      if (startedAt) {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed >= 0 && elapsed < 350) drop = -4 + Math.round((elapsed / 350) * 4);
+      }
+      const top = 7 + drop;
+      // left lens x8..11, right lens x12..15 (the eyes sit inside them)
+      px(8, top - 1, P.outline, 4, 1);
+      px(12, top - 1, P.outline, 4, 1);
+      px(8, top + 4, P.outline, 4, 1);
+      px(12, top + 4, P.outline, 4, 1);
+      px(8, top, P.outline, 1, 4);
+      px(11, top, P.outline, 1, 4);
+      px(12, top, P.outline, 1, 4);
+      px(15, top, P.outline, 1, 4);
+      px(9, top, P.lens, 2, 4);
+      px(13, top, P.lens, 2, 4);
+      // temples resting on the cheeks
+      px(7, top + 1, P.outline);
+      px(16, top + 1, P.outline);
+      // white lens glint sweeping left → right
+      const glint = Math.floor(tick / 2) % 4;
+      px(9, top + glint, P.white);
+      px(13, top + glint, P.white);
+      // scanning sparkle above the frames
+      if (reviewScan.active && tick % 4 < 2) drawSparkle(18, top - 2, P.gold);
+    }
+
+    // Which animation actually paints: catnap wins, then a temporary overlay
+    // (double-click cheer / low-timer panic), then the trot while gliding.
+    function renderState() {
+      if (napping) return 'nap';
+      if (overlayState && isKnownState(overlayState)) return overlayState;
+      if (currentState === 'idle' && Date.now() < walkUntil) return 'walk';
+      return isKnownState(currentState) ? currentState : 'idle';
+    }
+
+    function drawCatFrame(state, tick) {
+      if (!ctx) return;
+      clearSprite();
+      if (state === 'nap') { drawNap(tick); return; }
+
+      const walking = state === 'walk';
+      const step = Math.floor(tick / 2) % 4;
+      const bob = walking && step % 2 === 1 ? -1 : 0;
+      const hop = state === 'answering' ? (tick % 2 === 0 ? -2 : -1) : 0;
+      const dy = bob + hop;
+      const blink = state !== 'answering' && state !== 'review' && tick % 26 === 13;
+      const twitch = tick % 22 === 4;
+      const tailPhase = state === 'harvesting' ? tick : Math.floor(tick / 3);
+
+      drawTail(tailPhase, dy);
+      drawBody(dy, walking);
+      drawEars(dy, twitch);
+      drawBlob(HEAD_ROWS, dy, P.fur);
+      drawFace(dy, {
+        blink,
+        happy: state === 'answering' && tick % 2 === 0,
+        focus: state === 'review',
+      });
+      if (state !== 'typing' && state !== 'harvesting') drawPaws(dy, walking, step);
+
+      if (state === 'thinking') drawThinking(tick, dy);
+      else if (state === 'answering') drawExcited(tick, dy);
+      else if (state === 'clicking' || state === 'nextpage') drawSlap(tick, dy, state === 'nextpage');
+      else if (state === 'typing') drawLaptop(tick, dy);
+      else if (state === 'harvesting') drawPickaxe(tick, dy);
+      else if (state === 'review') drawGlasses(tick);
+    }
+
+    // Boot the ~7 FPS pixel loop. Hidden/unfocused tabs skip the repaint (the cat
+    // is either hidden there or the user cannot see him), so an idle background
+    // tab costs nothing.
+    function startPixelEngine() {
+      if (!catEl) return;
+      try {
+        ctx = catEl.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingEnabled = false;
+          ctx.setTransform(CANVAS / GRID, 0, 0, CANVAS / GRID, 0, 0);
+        }
+      } catch (error) {
+        ctx = null;
+        warnOnce('pixel-context', error);
+      }
+      if (!ctx) return; // no canvas support: the wrapper simply stays empty
+      if (frameTimer) clearInterval(frameTimer);
+      frameTimer = setInterval(() => {
+        try {
+          if (wrapEl && wrapEl.style.display === 'none') return;
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          frameTick += 1;
+          drawCatFrame(renderState(), frameTick);
+        } catch (error) {
+          warnOnce('pixel-frame', error);
+        }
+      }, FRAME_MS);
+      frameTick = 0;
+      drawCatFrame(renderState(), frameTick);
+    }
+
     /* ── Styles (self-contained; hud.css only styles the closed shadow HUD) ── */
 
     function injectStyles() {
@@ -380,14 +848,18 @@ try {
   transition: none;
   will-change: auto;
 }
+/* The pixel canvas: 96×96 rendered at ${SIZE}px with nearest-neighbour scaling,
+   so every sprite pixel stays a crisp square. The drop-shadow follows the cat's
+   silhouette instead of the element box (the canvas itself is transparent). */
 .${IMG_CLASS} {
   display: block;
   width: ${SIZE}px;
   height: ${SIZE}px;
-  object-fit: cover;
-  border-radius: 16px;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+  border: 0;
   background: transparent;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.38));
   pointer-events: auto;
   cursor: grab;
   user-select: none;
@@ -395,7 +867,7 @@ try {
   -webkit-user-drag: none;
   transform: scaleX(1);
   transform-origin: 50% 50%;
-  transition: transform 0.35s ease, box-shadow 0.25s ease;
+  transition: transform 0.35s ease, filter 0.25s ease;
 }
 .${IMG_CLASS}.qb-facing-left { transform: scaleX(-1); }
 .${IMG_CLASS}:active { cursor: grabbing; }
@@ -407,8 +879,8 @@ try {
   100% { translate: 0 0; }
 }
 @keyframes qbMascotGlow {
-  0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 0 rgba(245, 183, 79, 0); }
-  50%      { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 6px rgba(245, 183, 79, 0.35); }
+  0%, 100% { filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.38)); }
+  50%      { filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.38)) drop-shadow(0 0 9px rgba(255, 209, 102, 0.95)); }
 }
 #${BUBBLE_ID} {
   position: absolute;
@@ -456,6 +928,46 @@ try {
   right: auto;
   left: 20px;
 }
+
+/* Catnap: dimmed + slow breathing. Still draggable and clickable. */
+#${WRAP_ID}.qb-napping { opacity: 0.92; }
+#${WRAP_ID}.qb-napping .${IMG_CLASS} {
+  animation: qbMascotBreathe 4.6s ease-in-out infinite;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.3));
+}
+@keyframes qbMascotBreathe {
+  0%, 100% { scale: 1 1; }
+  50%      { scale: 1.035 1.035; }
+}
+
+/* The one cat lives on a single tab; every other tab gets this status pill
+   instead (HUD palette, so it reads as part of the bot's chrome). */
+#${PILL_ID} {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 2147483646;
+  max-width: min(320px, calc(100vw - 40px));
+  box-sizing: border-box;
+  padding: 9px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);
+  border: 1px solid rgba(255, 179, 71, 0.45);
+  color: #ffd166;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+#${PILL_ID}.${PILL_CLASS} { opacity: 1; visibility: visible; }
       `;
       (document.head || document.documentElement).appendChild(style);
     }
@@ -535,13 +1047,19 @@ try {
     }
 
     // Glide (CSS transition) to a target, flipping the cat to face its heading.
+    // While idle, the pixel engine plays the 4-frame trot for the duration of
+    // the glide, so roaming reads as walking instead of sliding.
     function moveTo(x, y) {
       if (!wrapEl) return;
       const spot = safeSpot(x, y);
       const dx = spot.left - pos.left;
       if (Math.abs(dx) > 6) {
         facing = dx < 0 ? 'left' : 'right';
-        if (imgEl) imgEl.classList.toggle('qb-facing-left', facing === 'left');
+        if (catEl) catEl.classList.toggle('qb-facing-left', facing === 'left');
+      }
+      if (currentState === 'idle' && !napping) {
+        const distance = Math.abs(dx) + Math.abs(spot.top - pos.top);
+        walkUntil = Date.now() + Math.min(1400, 450 + distance * 2);
       }
       applyPosition(spot.left, spot.top);
     }
@@ -550,7 +1068,7 @@ try {
     // paw pointing right at the blue button, whatever way the cat last walked.
     function faceRight() {
       facing = 'right';
-      if (imgEl) imgEl.classList.remove('qb-facing-left');
+      if (catEl) catEl.classList.remove('qb-facing-left');
     }
 
     /* ── Speech bubble ────────────────────────────────────────────────────── */
@@ -591,21 +1109,21 @@ try {
       return pickFreshLine(IDLE_QUOTES);
     }
 
-    // Temporary GIF overlay (double-click cheer, low-timer panic): show `state`'s
-    // asset for `ms` with `line` in the bubble, then restore whatever the real
-    // state machine currently wants. currentState never moves, so quiz logic and
-    // the reconciliation loop are completely untouched by it.
+    // Temporary animation overlay (double-click cheer, low-timer panic): play
+    // `state`'s animation for `ms` with `line` in the bubble, then restore
+    // whatever the real state machine currently wants. currentState never moves,
+    // so quiz logic and the reconciliation loop are untouched by it.
     function startOverlay(state, ms, line) {
-      if (!imgEl || !bubbleEl) return;
-      if (!ASSETS[state]) return;
+      if (!catEl || !bubbleEl) return;
+      if (!isKnownState(state)) return;
       if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
       overlayState = state;
-      if (imgEl.dataset.state !== state) {
+      if (catEl.dataset.state !== state) {
         applyAsset(state);
       }
-      imgEl.classList.remove('qb-hop', 'qb-review');
-      void imgEl.offsetWidth; // restart the hop animation
-      imgEl.classList.add('qb-hop');
+      catEl.classList.remove('qb-hop', 'qb-review');
+      void catEl.offsetWidth; // restart the hop animation
+      catEl.classList.add('qb-hop');
       if (line) setBubble(line, true);
       overlayTimer = setTimeout(restoreAfterOverlay, ms);
     }
@@ -613,13 +1131,517 @@ try {
     function restoreAfterOverlay() {
       overlayTimer = null;
       overlayState = '';
-      if (!imgEl) return;
-      const real = ASSETS[currentState] ? currentState : 'idle';
-      if (imgEl.dataset.state !== real) {
+      if (!catEl) return;
+      const real = isKnownState(currentState) ? currentState : 'idle';
+      if (catEl.dataset.state !== real) {
         applyAsset(real);
       }
-      if (real === 'review') imgEl.classList.add('qb-review');
-      else imgEl.classList.remove('qb-review');
+      if (real === 'review') catEl.classList.add('qb-review');
+      else catEl.classList.remove('qb-review');
+    }
+
+    /* ── Global presence: ONE cat shared by every tab ─────────────────────── */
+
+    // Cosmetic coordination only: nothing here can click, submit or block page
+    // code. Every tab reads and writes the same record:
+    //
+    //   chrome.storage.local.MASCOT_PRESENCE = {
+    //     ownerTabId, ownerUrl, busyState, busyLabel, workLockUntil, updatedAt
+    //   }
+    //
+    // Rule A (busy lock): a tab entering a working state (thinking, answering,
+    // clicking, typing, harvesting, review) claims ownership. Every other tab
+    // hides #qb-mascot-wrap and shows the "Cat is working on another tab..."
+    // pill while the claim is younger than PRESENCE_STALE_MS. The owner refreshes
+    // `updatedAt` every PRESENCE_HEARTBEAT_MS, so a closed/crashed tab stops
+    // counting as busy within 15 s.
+    //
+    // Rule A+ (session work lock): a quiz run and a harvest dip back to 'idle'
+    // between two questions, so `workLockUntil` (this tab's `_activeWorkUntil`)
+    // keeps the cat on the working tab through those gaps. While it is in the
+    // future no other tab may take ownership, no matter how fresh its focus is.
+    //
+    // Rule B (follow the active tab): an idle cat belongs to the tab the user is
+    // looking at. Ownership changes only on real user signals — a tab switch
+    // (visibilitychange), focusing another window, a page load, or another tab
+    // handing the idle cat over — so the 1.5 s reconciler can never make two tabs
+    // trade the cat back and forth. The receiving tab greets the user; every
+    // other tab keeps him hidden.
+
+    function pageUrl() {
+      try { return String(location.href || '').slice(0, 500); } catch (error) { return ''; }
+    }
+
+    function normalizePresence(raw) {
+      const value = raw && typeof raw === 'object' ? raw : {};
+      const owner = value.ownerTabId;
+      return {
+        ownerTabId: typeof owner === 'number' && Number.isFinite(owner) ? owner : null,
+        ownerUrl: typeof value.ownerUrl === 'string' ? value.ownerUrl : '',
+        busyState: typeof value.busyState === 'string' && value.busyState ? value.busyState : 'idle',
+        busyLabel: typeof value.busyLabel === 'string' ? value.busyLabel : '',
+        workLockUntil: Number(value.workLockUntil) || 0,
+        updatedAt: Number(value.updatedAt) || 0,
+      };
+    }
+
+    // A busy claim is only honoured for PRESENCE_STALE_MS; the owner keeps
+    // touching updatedAt while it works, so silence means "that tab went away".
+    function presenceIsFresh() {
+      return presence.updatedAt > 0 && (Date.now() - presence.updatedAt) < PRESENCE_STALE_MS;
+    }
+
+    // Another tab holds a live session work lock: a quiz run or a harvest is in
+    // progress there, even if it currently reads `busyState: 'idle'` because the
+    // cat is between two questions. Absolute deadline, so it survives a paused
+    // heartbeat and expires on its own when that tab dies mid-run.
+    function otherTabWorkLocked() {
+      return presence.workLockUntil > 0 && Date.now() < presence.workLockUntil;
+    }
+
+    // True while another tab must keep the cat: a fresh busy claim (Rule A) or a
+    // live session work lock (Rule A+). `presence.ownerTabId !== myTabId` is the
+    // entry condition for both, so the owner never blocks itself.
+    function otherTabIsBusy() {
+      if (!presenceEnabled || myTabId == null) return false;
+      if (presence.ownerTabId == null || presence.ownerTabId === myTabId) return false;
+      if (presence.busyState !== 'idle' && BUSY_LABELS[presence.busyState] && presenceIsFresh()) return true;
+      return otherTabWorkLocked();
+    }
+
+    function writePresence(next) {
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
+        chrome.storage.local.set({ [PRESENCE_KEY]: next }, () => {
+          try { void chrome.runtime.lastError; } catch (error) { /* no listener left */ }
+        });
+      } catch (error) {
+        warnOnce('presence-write', error);
+      }
+    }
+
+    // Callback style (not promises) so older Chromium builds and a suspended
+    // MV3 worker all behave the same; `finish` guarantees exactly one answer.
+    function readPresence(callback) {
+      let answered = false;
+      const finish = (value) => {
+        if (answered) return;
+        answered = true;
+        callback(value);
+      };
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+          finish(null);
+          return;
+        }
+        chrome.storage.local.get(PRESENCE_KEY, (data) => {
+          try {
+            if (chrome.runtime.lastError) { finish(null); return; }
+          } catch (error) { /* ignore */ }
+          finish(data ? data[PRESENCE_KEY] : null);
+        });
+      } catch (error) {
+        warnOnce('presence-read', error);
+        finish(null);
+      }
+    }
+
+    function requestTabId(callback) {
+      let answered = false;
+      const finish = (value) => {
+        if (answered) return;
+        answered = true;
+        callback(value);
+      };
+      try {
+        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+          finish(null);
+          return;
+        }
+        chrome.runtime.sendMessage({ action: 'GET_CURRENT_TAB_ID' }, (response) => {
+          try {
+            if (chrome.runtime.lastError) { finish(null); return; }
+          } catch (error) { /* ignore */ }
+          finish(response && typeof response.tabId === 'number' ? response.tabId : null);
+        });
+      } catch (error) {
+        warnOnce('presence-tab-id', error);
+        finish(null);
+      }
+    }
+
+    // Write ownership as this tab. The local mirror is updated first so the cat
+    // reacts immediately instead of waiting for the storage round-trip. Every
+    // write carries the session work lock, so an idle record published between
+    // two questions still tells the other tabs that this run is in progress.
+    function pushPresence(busyState, busyLabel) {
+      if (!presenceEnabled || myTabId == null) return;
+      const state = busyState !== 'idle' && BUSY_LABELS[busyState] ? busyState : 'idle';
+      const next = {
+        ownerTabId: myTabId,
+        ownerUrl: pageUrl(),
+        busyState: state,
+        busyLabel: state === 'idle' ? '' : (busyLabel || BUSY_LABELS[state] || ''),
+        workLockUntil: _activeWorkUntil,
+        updatedAt: Date.now(),
+      };
+      presence = next;
+      writePresence(next);
+      applyPresence();
+    }
+
+    // Rule A+: publish the session work lock without disturbing the busy state.
+    // Refuses to overwrite another tab's live claim (a dead one is fair game, so a
+    // fresh run can still rescue the cat). Throttled by the caller.
+    function publishWorkLock() {
+      if (!presenceEnabled || myTabId == null) return;
+      if (presence.ownerTabId !== myTabId && otherTabIsBusy()) return;
+      const state = BUSY_LABELS[currentState] ? currentState : 'idle';
+      pushPresence(state, state === 'idle' ? '' : BUSY_LABELS[state]);
+    }
+
+    // Feed every HUD line through here (before any other reader). A quiz run and a
+    // harvest re-arm a 20 s work lock, so the cat stays put through the idle gap
+    // between two questions; "Bot stopped" / "Quiz complete" / "Review scan:" /
+    // "Harvested" end it immediately.
+    function noteWorkLockLine(line) {
+      if (!line) return;
+      if (WORK_END_RE.test(line)) {
+        if (!_activeWorkUntil) return;
+        _activeWorkUntil = 0;
+        lastWorkLockPushAt = 0; // the next run publishes at once
+        // Only the owner (or a record nobody owns) may publish the cleared lock:
+        // an idle tab must never take the cat just because a run ended somewhere.
+        if (presence.ownerTabId == null || presence.ownerTabId === myTabId) publishWorkLock();
+        return;
+      }
+      if (!WORK_START_RE.test(line)) return;
+      _activeWorkUntil = Date.now() + WORK_LOCK_MS;
+      if (Date.now() - lastWorkLockPushAt < 4000) return; // ≤ one storage write / 4 s
+      lastWorkLockPushAt = Date.now();
+      publishWorkLock();
+    }
+
+    function claimBusy(state) {
+      if (!BUSY_LABELS[state]) return;
+      if (presence.ownerTabId === myTabId && presence.busyState === state) return; // heartbeat covers it
+      pushPresence(state, BUSY_LABELS[state]);
+    }
+
+    // Only the current owner (or a tab that has never seen an owner) may publish
+    // an idle record — an idle background tab must not steal the cat.
+    function releaseBusy() {
+      if (!presenceEnabled || myTabId == null) return;
+      if (presence.busyState === 'idle' && presence.ownerTabId === myTabId) return;
+      if (presence.ownerTabId != null && presence.ownerTabId !== myTabId) return;
+      pushPresence('idle', '');
+    }
+
+    // Rule B: take the idle cat onto this (visible) tab. `follow` greets the user
+    // only when the cat was somewhere else before, so a plain page load stays
+    // quiet.
+    function claimIdle(follow) {
+      if (!presenceEnabled || myTabId == null) return;
+      try {
+        if (document.visibilityState !== 'visible') return;
+      } catch (error) { /* keep going */ }
+      if (otherTabIsBusy()) return; // Rule A always wins
+      const previousOwner = presence.ownerTabId;
+      const wasBusy = presence.busyState !== 'idle';
+      if (previousOwner === myTabId) { applyPresence(); return; }
+      pushPresence('idle', '');
+      if (follow && (wasBusy || previousOwner != null)) {
+        const line = pickFreshLine(FOLLOW_LINES);
+        if (line) setBubble(line, true);
+        scheduleQuote();
+      }
+    }
+
+    function documentHasFocus() {
+      try {
+        return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+      } catch (error) {
+        return true;
+      }
+    }
+
+    // Polled by the existing 1.5 s reconciler. Ownership never moves merely
+    // because two tabs poll each other (that would trade the cat forever); it
+    // only moves on two one-shot recoveries: a busy claim older than
+    // PRESENCE_STALE_MS means that tab was closed/crashed, and a finished session
+    // work lock ("Bot stopped" / "Harvested" / "Quiz complete") hands the idle cat
+    // back to the tab the user is actually looking at.
+    function presenceTick() {
+      if (!presenceReady || !presenceEnabled) return;
+      applyPresence();
+      const otherOwner = presence.ownerTabId != null && presence.ownerTabId !== myTabId;
+      if (presence.ownerTabId === myTabId) { sawOtherTabWorking = false; return; }
+      if (otherOwner && otherTabIsBusy()) {
+        sawOtherTabWorking = true;                  // Rule A / A+ still holds it there
+        return;
+      }
+      // The other tab stopped working (busy claim gone, work lock cleared by "Bot
+      // stopped" / "Harvested" / "Quiz complete" or expired). The focused tab takes
+      // the cat back instead of leaving him hidden until the user switches again.
+      // Focus decides, so two visible windows can never trade him back and forth.
+      if (otherOwner && sawOtherTabWorking) {
+        let seen = true;
+        try { seen = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+        if (seen && documentHasFocus()) {
+          sawOtherTabWorking = false;
+          claimIdle(true);
+          return;
+        }
+      }
+      if (presence.busyState === 'idle' || presenceIsFresh()) return;
+      if (Date.now() - lastStaleRecoveryAt < PRESENCE_STALE_MS) return;
+      let visible = true;
+      try { visible = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+      if (!visible || !documentHasFocus()) return;
+      lastStaleRecoveryAt = Date.now();
+      claimIdle(false); // the busy owner vanished: take the cat back
+    }
+
+    // Rule B follow-through for "work finished while I was already watching this
+    // tab": a fresh idle record handed over by another tab is claimed by the tab
+    // the user is looking at. The tab-id tie-break (`myTabId < previousOwner`)
+    // makes the hand-off deterministic, so two visible windows can never trade
+    // the cat back and forth.
+    function maybeFollowIdle(previousOwner) {
+      if (!presenceEnabled || myTabId == null) return;
+      if (presence.busyState !== 'idle') return;      // another tab is still working
+      if (previousOwner == null || previousOwner === myTabId) return;
+      if (myTabId >= previousOwner) return;           // deterministic winner only
+      let visible = true;
+      try { visible = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+      if (!visible || !documentHasFocus()) return;
+      claimIdle(true); // "Done working! What are we doing on this tab?"
+    }
+
+    function showCat() {
+      if (!wrapEl) return;
+      if (wrapEl.style.display === 'none') wrapEl.style.display = 'block';
+      if (!booted || currentState !== 'idle' || napping) return;
+      if (!roamTimer) scheduleRoam();
+      if (!quoteTimer) scheduleQuote();
+    }
+
+    function hideCat() {
+      if (!wrapEl) return;
+      if (wrapEl.style.display !== 'none') wrapEl.style.display = 'none';
+      if (bubbleEl) bubbleEl.classList.remove('qb-bubble-visible');
+      if (roamTimer) { clearTimeout(roamTimer); roamTimer = null; }
+      if (quoteTimer) { clearTimeout(quoteTimer); quoteTimer = null; }
+    }
+
+    function showPill(show, text) {
+      if (!pillEl) return;
+      const label = text || PILL_TEXT;
+      if (pillEl.textContent !== label) pillEl.textContent = label;
+      let visible = true;
+      try { visible = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+      pillEl.classList.toggle(PILL_CLASS, !!show && visible);
+    }
+
+    // Single source of truth for "is the cat painted here?". While another tab is
+    // working — or merely holds a live work lock between two questions — this tab
+    // keeps #qb-mascot-wrap at display:none and shows the busy pill instead.
+    function applyPresence() {
+      if (!wrapEl) return;
+      if (!presenceReady) { hideCat(); showPill(false); return; }
+      if (!presenceEnabled) { showCat(); showPill(false); return; } // single-tab fallback
+      const busyElsewhere = otherTabIsBusy();
+      const workLocked = busyElsewhere && otherTabWorkLocked();
+      showPill(busyElsewhere, workLocked ? WORK_PILL_TEXT : PILL_TEXT);
+      if (busyElsewhere) { hideCat(); return; }
+      if (presence.ownerTabId === myTabId) { showCat(); return; }
+      let visible = true;
+      try { visible = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+      // Nobody has claimed the cat yet: the visible tab may show it for the
+      // split second before the first claim lands.
+      if (presence.ownerTabId == null && visible) { showCat(); return; }
+      hideCat();
+    }
+
+    // Every state change runs through here: working states claim the cat, idle
+    // hands it back to whichever tab the user is on.
+    function syncPresenceForState(state) {
+      // Starting a quiz / harvest always wakes him up, even before the shared
+      // record is ready (the state's own bubble takes over right after).
+      if (state === 'idle') wakeFromNap(null);
+      else if (BUSY_LABELS[state]) wakeFromNap(WAKE_LINE);
+      if (!presenceReady || !presenceEnabled) return;
+      if (BUSY_LABELS[state]) { claimBusy(state); return; }
+      if (state === 'idle') releaseBusy();
+    }
+
+
+    /* ── Catnap: "doing cat things" while idle ────────────────────────────── */
+
+    function catShown() {
+      return !!wrapEl && wrapEl.style.display !== 'none';
+    }
+
+    // Awake *and* actually on screen: roaming, chatter and naps only run then.
+    function catOnScreen() {
+      if (!booted || !catShown()) return false;
+      let visible = true;
+      try { visible = document.visibilityState === 'visible'; } catch (error) { /* assume */ }
+      return visible;
+    }
+
+    function catActive() {
+      return !napping && catOnScreen();
+    }
+
+    function markInteraction() {
+      lastInteractionAt = Date.now();
+    }
+
+    // Polled every NAP_TICK_MS: 35 s of stillness on an idle cat → catnap.
+    function napTick() {
+      if (!booted || napping || drag || overlayState) return;
+      if (currentState !== 'idle' || !catOnScreen()) return;
+      if (Date.now() - lastInteractionAt < NAP_AFTER_MS) return;
+      enterNap();
+    }
+
+    function enterNap() {
+      if (napping || !wrapEl || !bubbleEl) return;
+      napping = true;
+      if (roamTimer) { clearTimeout(roamTimer); roamTimer = null; }
+      if (quoteTimer) { clearTimeout(quoteTimer); quoteTimer = null; }
+      wrapEl.classList.add(NAP_CLASS);
+      setBubble(pickFreshLine(NAP_LINES), true);
+      scheduleNapQuote();
+    }
+
+    // Sleepy mumbling every 11–15 s: gentle proof the cat is still there.
+    function scheduleNapQuote() {
+      if (napQuoteTimer) clearTimeout(napQuoteTimer);
+      napQuoteTimer = setTimeout(() => {
+        napQuoteTimer = null;
+        if (!napping) return;
+        if (catOnScreen()) setBubble(pickFreshLine(NAP_LINES), true);
+        scheduleNapQuote();
+      }, NAP_QUOTE_MIN_MS + Math.random() * NAP_QUOTE_SPREAD_MS);
+    }
+
+    // Any click / quiz start / harvest wakes him instantly. `line` is optional so
+    // a state change can wake him silently while its own bubble speaks.
+    function wakeFromNap(line) {
+      if (!napping) {
+        if (line) setBubble(line, true);
+        return;
+      }
+      napping = false;
+      lastInteractionAt = Date.now();
+      if (napQuoteTimer) { clearTimeout(napQuoteTimer); napQuoteTimer = null; }
+      if (wrapEl) wrapEl.classList.remove(NAP_CLASS);
+      if (line) setBubble(line, true);
+      else if (bubbleEl) bubbleEl.classList.remove('qb-bubble-visible');
+      if (currentState === 'idle' && catShown()) scheduleQuote();
+    }
+
+    /* ── Presence wiring: storage, visibility, heartbeat, first claim ─────── */
+
+    function watchPresenceChanges() {
+      if (presenceWatched) return;
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          try {
+            if (areaName !== 'local' || !changes || !changes[PRESENCE_KEY]) return;
+            const previousOwner = presence.ownerTabId;
+            presence = normalizePresence(changes[PRESENCE_KEY].newValue);
+            presenceReady = true;
+            applyPresence();          // every other tab reacts here: hide + pill, or reveal
+            maybeFollowIdle(previousOwner); // idle hand-off → follow it if it is ours
+          } catch (error) {
+            warnOnce('presence-change', error);
+          }
+        });
+        presenceWatched = true;
+      } catch (error) {
+        warnOnce('presence-watch', error);
+      }
+    }
+
+    // While this tab works it re-stamps updatedAt, so other tabs keep honouring
+    // the busy lock and a crashed tab drops out after PRESENCE_STALE_MS.
+    function startPresenceHeartbeat() {
+      if (presenceHeartbeat) return;
+      presenceHeartbeat = setInterval(() => {
+        try {
+          if (!presenceEnabled || presence.ownerTabId !== myTabId) return;
+          if (presence.busyState === 'idle' || !BUSY_LABELS[presence.busyState]) return;
+          presence = { ...presence, ownerUrl: pageUrl(), updatedAt: Date.now() };
+          writePresence(presence);
+        } catch (error) {
+          warnOnce('presence-heartbeat', error);
+        }
+      }, PRESENCE_HEARTBEAT_MS);
+    }
+
+    function onVisibilityChange() {
+      try {
+        if (document.visibilityState === 'visible') {
+          markInteraction();
+          wakeFromNap(null); // coming back to the tab gets him up
+          // Switching tabs must never steal the cat while a quiz run or a harvest
+          // is still going on elsewhere — not even during its idle gap between two
+          // questions. That tab keeps #qb-mascot-wrap; this one stays hidden and
+          // shows the busy pill until the run/harvest finishes.
+          if (otherTabIsBusy()) { applyPresence(); return; }
+          claimIdle(true);   // Rule B: the idle cat follows the active tab
+        }
+        applyPresence();
+      } catch (error) {
+        warnOnce('visibility', error);
+      }
+    }
+
+    // Same idea for a second window: clicking into it focuses the document
+    // without changing visibility, and the cat should hop over with the user —
+    // unless another tab is still working or holds a live work lock.
+    function onTabFocus() {
+      try {
+        markInteraction();
+        if (otherTabIsBusy()) { applyPresence(); return; }
+        claimIdle(true);
+        applyPresence();
+      } catch (error) {
+        warnOnce('focus', error);
+      }
+    }
+
+    // Boot: learn this tab's id, read the shared record, then show/hide the cat.
+    // If the worker never answers we degrade to the old one-cat-per-tab mascot
+    // instead of hiding him forever.
+    function initPresence() {
+      applyPresence(); // hidden while the owner is still unknown
+      watchPresenceChanges();
+      setTimeout(() => {
+        if (presenceReady) return;
+        presenceReady = true;
+        applyPresence();
+      }, PRESENCE_INIT_TIMEOUT_MS);
+      requestTabId((tabId) => {
+        myTabId = tabId;
+        presenceEnabled = typeof tabId === 'number';
+        readPresence((stored) => {
+          presence = normalizePresence(stored);
+          presenceReady = true;
+          startPresenceHeartbeat();
+          if (!presenceEnabled) { applyPresence(); return; }
+          // Boot may land mid-review (score page): honour that working state
+          // instead of quietly claiming an idle cat. Otherwise appear quietly,
+          // no greeting on a plain page load.
+          if (BUSY_LABELS[currentState]) claimBusy(currentState);
+          else claimIdle(false);
+          applyPresence();
+        });
+      });
     }
 
     /* ── DOM: draggable cat + wrapped speech bubble ───────────────────────── */
@@ -634,69 +1656,58 @@ try {
       bubbleEl = document.createElement('div');
       bubbleEl.id = BUBBLE_ID;
 
-      imgEl = document.createElement('img');
-      imgEl.className = IMG_CLASS;
-      imgEl.alt = 'Quiz bot cat mascot';
-      imgEl.draggable = false;
-      imgEl.dataset.state = 'idle';
-      imgEl.addEventListener('error', onAssetError);
+      catEl = document.createElement('canvas');
+      catEl.className = IMG_CLASS;
+      catEl.width = CANVAS;
+      catEl.height = CANVAS;
+      catEl.setAttribute('role', 'img');
+      catEl.setAttribute('aria-label', 'Quiz bot pixel cat mascot');
+      catEl.dataset.state = 'idle';
+      startPixelEngine();
       applyAsset('idle');
-      imgEl.addEventListener('click', onMascotClick);
-      imgEl.addEventListener('mousedown', onDragStart);
-      imgEl.addEventListener('dblclick', onMascotDoubleClick);
-      imgEl.addEventListener('mouseenter', onMascotHover, { passive: true });
+      catEl.addEventListener('click', onMascotClick);
+      catEl.addEventListener('mousedown', onDragStart);
+      catEl.addEventListener('dblclick', onMascotDoubleClick);
+      catEl.addEventListener('mouseenter', onMascotHover, { passive: true });
 
       wrapEl.appendChild(bubbleEl);
-      wrapEl.appendChild(imgEl);
+      wrapEl.appendChild(catEl);
 
       // Paint the very first frame already parked bottom-right (no animation).
       const start = safeSpot(window.innerWidth - SIZE - 20, window.innerHeight - SIZE - 20);
       pos = { left: start.left, top: start.top };
       wrapEl.style.left = Math.round(start.left) + 'px';
       wrapEl.style.top = Math.round(start.top) + 'px';
+      // Hidden until the shared MASCOT_PRESENCE record says this tab owns the
+      // cat — that is what keeps exactly one cat on screen across all tabs.
+      wrapEl.style.display = 'none';
 
       (document.body || document.documentElement).appendChild(wrapEl);
       alignBubble();
+
+      // Status pill shown on the tabs that do NOT own the cat while it works.
+      if (!pillEl || !pillEl.isConnected) {
+        pillEl = document.createElement('div');
+        pillEl.id = PILL_ID;
+        pillEl.textContent = PILL_TEXT;
+        (document.body || document.documentElement).appendChild(pillEl);
+      }
 
       document.addEventListener('mousemove', onDragMove, { passive: true });
       document.addEventListener('mouseup', onDragEnd, true);
       window.addEventListener('resize', onWindowResize, { passive: true });
     }
 
-    // A missing/broken GIF never breaks the mascot: remember the file that
-    // failed, then fall back to that state's fallback asset (harvesting →
-    // idle.gif) while keeping the logical state — and its bubble — alive.
-    function onAssetError() {
-      try {
-        if (!imgEl || !imgEl.dataset) return;
-        const failed = imgEl.dataset.asset || '';
-        if (failed) brokenAssets.add(failed);
-        const logical = imgEl.dataset.state || 'idle';
-        const path = ASSETS[renderKeyFor(logical)];
-        if (path && path !== failed && !brokenAssets.has(path)) {
-          imgEl.dataset.asset = path;
-          imgEl.src = assetUrl(path);
-          return;
-        }
-        if (imgEl.dataset.state !== 'idle') {
-          imgEl.dataset.state = 'idle';
-          imgEl.dataset.asset = ASSETS.idle;
-          imgEl.src = assetUrl(ASSETS.idle);
-          return;
-        }
-        warnOnce('asset', 'mascot assets could not be loaded');
-      } catch (error) {
-        /* never throw */
-      }
-    }
-
     // Single click: a playful petting reaction. The same click handler swallows
     // the second click of a double click (PET_COOLDOWN_MS) so the cheer takes over.
     function onMascotClick() {
       if (Date.now() < suppressClickUntil) return;
+      // Clicking a sleeping cat wakes him up instead of petting him.
+      if (napping) { markInteraction(); wakeFromNap(WAKE_LINE); return; }
       const now = Date.now();
       if (now - lastPetAt < PET_COOLDOWN_MS) return;
       lastPetAt = now;
+      markInteraction();
       try {
         if (currentState === 'idle') {
           const line = pickFreshLine(PET_LINES);
@@ -717,11 +1728,13 @@ try {
       }
     }
 
-    // Double click: 1.8 s of answering.gif plus an excited cheer, then straight
-    // back to whatever the state machine wants (idle / review / an action GIF).
+    // Double click: 1.8 s of the answering cheer, then straight back to whatever
+    // the state machine wants (idle / review / an action pose).
     function onMascotDoubleClick() {
       if (Date.now() < suppressClickUntil) return;
       try {
+        markInteraction();
+        wakeFromNap(null); // a cheer never happens from inside a catnap
         startOverlay('answering', CHEER_MS, pickFreshLine(HYPE_LINES));
       } catch (error) {
         warnOnce('double-click', error);
@@ -733,6 +1746,8 @@ try {
     function onMascotHover() {
       try {
         if (!booted || drag || overlayState) return;
+        markInteraction();
+        if (napping) return; // never talk over a catnap
         const now = Date.now();
         if (now - lastHoverAt < HOVER_COOLDOWN_MS) return;
         lastHoverAt = now;
@@ -751,6 +1766,7 @@ try {
 
     function onDragStart(event) {
       if (!wrapEl || event.button !== 0) return;
+      markInteraction();
       const rect = rectFor(wrapEl) || { left: pos.left, top: pos.top };
       drag = {
         offsetX: event.clientX - rect.left,
@@ -758,6 +1774,9 @@ try {
         startX: event.clientX,
         startY: event.clientY,
         moved: false,
+        // A plain click must still be able to show the "Yawn~" wake line, so the
+        // catnap only ends once the cat is actually being carried around.
+        napAtStart: napping,
       };
       wrapEl.classList.add('qb-dragging');
     }
@@ -767,6 +1786,7 @@ try {
       const travelled = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY);
       if (!drag.moved && travelled < 4) return;
       drag.moved = true;
+      if (drag.napAtStart) wakeFromNap(null); // carrying him around wakes him
       const maxLeft = maxLeftFor();
       const maxTop = Math.max(EDGE, window.innerHeight - SIZE - EDGE);
       const left = clamp(event.clientX - drag.offsetX, EDGE, maxLeft);
@@ -800,6 +1820,7 @@ try {
     /* ── Idle chatter + review score (read-only) ──────────────────────────── */
 
     function scheduleQuote() {
+      if (!catActive()) return; // hidden tab or catnap: chatter resumes on reveal
       if (quoteTimer) clearTimeout(quoteTimer);
       quoteTimer = setTimeout(() => {
         quoteTimer = null;
@@ -808,7 +1829,7 @@ try {
     }
 
     function showRandomQuote() {
-      if (!bubbleEl || currentState !== 'idle') return;
+      if (!bubbleEl || currentState !== 'idle' || !catActive()) return;
       if (overlayState) { scheduleQuote(); return; } // an overlay owns the bubble
       const text = randomQuote();
       if (text) setBubble(text, true);
@@ -828,11 +1849,12 @@ try {
     /* ── State machine ────────────────────────────────────────────────────── */
 
     function setState(next, options) {
-      const state = ASSETS[next] ? next : 'idle';
-      if (!imgEl || !bubbleEl) return;
+      const state = isKnownState(next) ? next : 'idle';
+      if (!catEl || !bubbleEl) return;
       const opts = options || {};
       const changed = currentState !== state;
       currentState = state;
+      if (changed) syncPresenceForState(state);
 
       if (changed) {
         if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
@@ -844,15 +1866,15 @@ try {
         // A queued action only survives the "AHA!!" reaction it was queued for.
         if (state !== 'answering') pendingAction = null;
 
-        if (imgEl.dataset.state !== state) {
+        if (catEl.dataset.state !== state) {
           applyAsset(state);
         }
-        imgEl.classList.remove('qb-hop', 'qb-review');
+        catEl.classList.remove('qb-hop', 'qb-review');
         if (state === 'answering' || state === 'nextpage' || state === 'harvesting' || ACTION_STATES.includes(state)) {
-          void imgEl.offsetWidth; // restart the hop animation
-          imgEl.classList.add('qb-hop');
+          void catEl.offsetWidth; // restart the hop animation
+          catEl.classList.add('qb-hop');
         } else if (state === 'review') {
-          imgEl.classList.add('qb-review');
+          catEl.classList.add('qb-review');
           lastLearnedShown = -1;
           reviewStartedAt = Date.now();
         }
@@ -879,7 +1901,7 @@ try {
       }
 
       if (state === 'answering') {
-        // Brief "AHA!! Found it! ✨" reaction, then the matching action GIF.
+        // Brief "AHA!! Found it! ✨" reaction, then the matching action animation.
         setBubble(SPEECH.answering, true);
         if (holdTimer) clearTimeout(holdTimer);
         holdTimer = setTimeout(() => {
@@ -925,12 +1947,14 @@ try {
         return;
       }
 
-      // review
+      // review — the visual scanner owns the bubble while it is running.
+      if (reviewScan.active) { setBubble(reviewScanBubble(), true); return; }
       setBubble(SPEECH.review, true);
       if (reviewTimer) clearTimeout(reviewTimer);
       reviewTimer = setTimeout(() => {
         reviewTimer = null;
         if (currentState !== 'review') return;
+        if (reviewScan.active) return; // scan counts own the bubble
         if (announceReviewScore()) return; // e.g. "SHEESH!! High score!! ..."
         if (scoreAnnounced) return; // celebration already shown by an earlier pass
         setBubble(SPEECH.learned(countRight()), true);
@@ -939,6 +1963,7 @@ try {
 
     function refreshReviewCount() {
       if (currentState !== 'review') return;
+      if (reviewScan.active) return; // the scan bubble already shows the count
       if (Date.now() - reviewStartedAt < REVIEW_COUNT_DELAY_MS) return;
       if (scoreAnnounced) return; // the score celebration already owns the bubble
       const count = countRight();
@@ -952,7 +1977,7 @@ try {
     function scheduleRoam() {
       if (roamTimer) clearTimeout(roamTimer);
       roamTimer = null;
-      if (currentState !== 'idle') return;
+      if (currentState !== 'idle' || !catActive()) return;
       roamTimer = setTimeout(() => {
         roamTimer = null;
         roamOnce();
@@ -961,6 +1986,7 @@ try {
 
     function roamOnce() {
       if (currentState !== 'idle' || drag) { scheduleRoam(); return; }
+      if (!catActive()) return; // hidden or napping: roaming resumes on reveal
       if (Date.now() < pauseRoamUntil) { scheduleRoam(); return; } // 15 s after a drag
       const target = pickRoamTarget();
       moveTo(target.left, target.top);
@@ -1305,7 +2331,7 @@ try {
     }
 
     // Answer detected → brief "AHA!! Found it! ✨" hop, then the matching action
-    // GIF (`clicking` or `typing`) parked beside the control that was answered.
+    // pose (`clicking` or `typing`) parked beside the control that was answered.
     function enterAnswering(anchor, kind) {
       const now = Date.now();
       if (now - lastAnswerAt < ANSWER_THROTTLE_MS) return; // DOM + log double-fire
@@ -1330,9 +2356,9 @@ try {
       if (spot) moveTo(spot.left, spot.top);
     }
 
-    // Second half of an answer: play clicking.gif right on the exact radio dot /
-    // checkbox the bot ticked (then hop beside the Next page button), or
-    // typing.gif beside the text box it filled in.
+    // Second half of an answer: play the clicking pose right on the exact radio
+    // dot / checkbox the bot ticked (then hop beside the Next page button), or
+    // the typing pose beside the text box it filled in.
     function startAction() {
       const action = pendingAction || {};
       pendingAction = null;
@@ -1344,7 +2370,7 @@ try {
         if (spot) moveTo(spot.left, spot.top);
         return;
       }
-      // clicking.gif: land on the *exact* dot / checkbox, not just its row.
+      // clicking: land on the *exact* dot / checkbox, not just its row.
       const spot = slapSpot(action.anchor || actionAnchor(kind));
       if (spot) moveTo(spot.left, spot.top);
     }
@@ -1367,6 +2393,8 @@ try {
     function enterReview() {
       const alreadyReview = currentState === 'review';
       setState('review');
+      // While the visual scanner is running it owns the cat's position.
+      if (reviewScan.active) return;
       if (alreadyReview && reviewParked) return;
       const summary = document.querySelector('.quizreviewsummary, #quizreviewsummary, .reviewsummary, .quizreview, .totalgrade, .grade');
       const spot = beside(rectFor(summary));
@@ -1374,6 +2402,106 @@ try {
         moveTo(spot.left, spot.top);
         reviewParked = true;
       }
+    }
+
+    /* ── Visual review scanner (glasses + glide + live counts) ────────────── */
+
+    // The bubble line the user sees while content.js scans: the live scan count
+    // followed by the GitHub sync badge ("Scanned! Saved 12 answers (4 new) •
+    // GitHub ✓").
+    function reviewScanBubble() {
+      if (reviewScan.right == null) return 'Checking every answer... 👓';
+      let text = 'Scanned! Saved ' + reviewScan.right + ' answers';
+      if (reviewScan.newCount != null) text += ' (' + reviewScan.newCount + ' new)';
+      if (reviewScan.github) text += ' • ' + reviewScan.github;
+      return text;
+    }
+
+    // Every visible .que block, top to bottom: the scanner walks this list.
+    function reviewScanBlocks() {
+      try {
+        return Array.from(document.querySelectorAll('.que'))
+          .filter((que) => {
+            const rect = rectFor(que);
+            return !!rect && rect.height > 40;
+          })
+          .sort((a, b) => {
+            const ra = rectFor(a);
+            const rb = rectFor(b);
+            return (ra ? ra.top : 0) - (rb ? rb.top : 0);
+          });
+      } catch (error) {
+        return [];
+      }
+    }
+
+    // Glide down to the next question block, glasses on, bubble live.
+    function reviewScanStep() {
+      if (!reviewScan.active) return;
+      const blocks = reviewScanBlocks();
+      if (!blocks.length) return;
+      const block = blocks[reviewScan.index % blocks.length];
+      reviewScan.index += 1;
+      const spot = beside(rectFor(block));
+      if (spot) {
+        moveTo(spot.left, spot.top);
+        faceRight();
+      }
+      if (reviewScan.right == null) setBubble(reviewScanBubble(), true);
+    }
+
+    function stopReviewScan() {
+      reviewScan.active = false;
+      if (reviewScan.timer) { clearInterval(reviewScan.timer); reviewScan.timer = null; }
+      if (reviewScan.stopTimer) { clearTimeout(reviewScan.stopTimer); reviewScan.stopTimer = null; }
+    }
+
+    function scheduleReviewScanStop(ms) {
+      if (reviewScan.stopTimer) clearTimeout(reviewScan.stopTimer);
+      reviewScan.stopTimer = setTimeout(() => {
+        reviewScan.stopTimer = null;
+        stopReviewScan();
+      }, ms);
+    }
+
+    function enterReviewScan() {
+      if (reviewScan.active) {
+        setBubble(reviewScanBubble(), true);
+        return;
+      }
+      reviewScan.active = true;
+      reviewScan.startedAt = Date.now();
+      reviewScan.right = null;
+      reviewScan.newCount = null;
+      reviewScan.github = '';
+      reviewScan.index = 0;
+      if (reviewScan.timer) clearInterval(reviewScan.timer);
+      reviewScan.timer = setInterval(() => {
+        try { reviewScanStep(); } catch (error) { warnOnce('review-glide', error); }
+      }, REVIEW_GLIDE_MS);
+      scheduleReviewScanStop(REVIEW_SCAN_MAX_MS);
+      reviewParked = false;
+      setState('review', { restart: true });
+      setBubble(reviewScanBubble(), true);
+      reviewScanStep();
+    }
+
+    // "Review scan: verified & saved 12 answers (4 new)" → live bubble counts.
+    function noteReviewScanResult(right, newCount) {
+      if (!reviewScan.active) enterReviewScan();
+      reviewScan.right = Math.max(0, Number(right) || 0);
+      reviewScan.newCount = newCount == null ? null : Math.max(0, Number(newCount) || 0);
+      setBubble(reviewScanBubble(), true);
+      scheduleReviewScanStop(5000);
+    }
+
+    // "GitHub sync: +4 pushed ✓" → append the sync badge to the same bubble.
+    // Failures/skips leave the bubble clean (content.js already warns in the HUD).
+    function noteGitHubSync(ok, pushed) {
+      if (!reviewScan.active) return;
+      reviewScan.github = ok ? (pushed > 0 ? 'GitHub +' + pushed + ' ✓' : 'GitHub ✓') : '';
+      setBubble(reviewScanBubble(), true);
+      if (ok) scheduleReviewScanStop(3500);
     }
 
     /* ── Live page awareness: low-timer alarm + review score celebration ──── */
@@ -1433,6 +2561,7 @@ try {
         if (seconds > TIMER_PANIC_SECONDS) { panicWarned = false; return; }
         if (seconds <= 0 || panicWarned) return;
         panicWarned = true;
+        wakeFromNap(null); // a low-timer alarm never fires from inside a catnap
         startOverlay('review', PANIC_HOLD_MS, PANIC_LINE);
       } catch (error) {
         warnOnce('timer-check', error);
@@ -1487,6 +2616,7 @@ try {
     // false (and says nothing) when the grade table is missing or unreadable, so
     // setState('review') can fall back to the "Learned X right!" line.
     function announceReviewScore() {
+      if (reviewScan.active) return false; // scanner counts own the bubble
       if (scoreAnnounced) return false;
       const percent = reviewPercent();
       if (percent == null) return false;
@@ -1495,10 +2625,10 @@ try {
         ? pickFreshLine(SCORE_HIGH_LINES)
         : (percent >= 75 ? pickFreshLine(SCORE_PASS_LINES) : pickFreshLine(SCORE_LOW_LINES));
       if (line) { lastScoreLine = line; setBubble(line, true); } // remember + show
-      if (imgEl) {
-        imgEl.classList.remove('qb-hop');
-        void imgEl.offsetWidth;
-        imgEl.classList.add('qb-hop');
+      if (catEl) {
+        catEl.classList.remove('qb-hop');
+        void catEl.offsetWidth;
+        catEl.classList.add('qb-hop');
       }
       return true;
     }
@@ -1507,13 +2637,15 @@ try {
 
     function refresh() {
       if (!booted || !wrapEl) return;
+      try { presenceTick(); } catch (error) { warnOnce('presence-tick', error); }
       if (isReviewPage()) {
         enterReview();
         if (!scoreAnnounced) announceReviewScore(); // grade table may load late
         return;
       }
       if (currentState === 'review') { reviewParked = false; setState('idle'); }
-      // Hold the "AHA!!" reaction and the clicking / typing action GIF.
+      if (reviewScan.active) stopReviewScan(); // navigated away from the review page
+      // Hold the "AHA!!" reaction and the clicking / typing action pose.
       if (currentState === 'answering' || currentState === 'nextpage' || currentState === 'harvesting'
         || ACTION_STATES.includes(currentState)) return;
 
@@ -1601,7 +2733,7 @@ try {
       return false;
     }
 
-    // Which GIF a HUD line implies:
+    // Which action pose a HUD line implies:
     //   'typing'   — a fill-in-the-blank / short-answer box got typed into
     //   'clicking' — a radio / checkbox / dropdown answer got chosen
     //   'answer'   — the bot answered, but the wording does not say how, so the
@@ -1628,9 +2760,33 @@ try {
         .replace(/^\s*\[[^\]]*\]\s*/, ''); // drop an optional [timestamp]
       if (!line) return;
 
+      // Session work lock first: it must see every line, including the harvest
+      // summaries that the harvest narration swallows right below.
+      noteWorkLockLine(line);
+
       // Harvest progress owns the cat first: these lines must never fall through
       // to the answer classifier ("3 matched card(s)" would look like a click).
       if (noteHarvestLine(line)) return;
+
+      // Review scanner: "Review scan: checking all answers..." puts the reading
+      // glasses on and starts the glide; the result / sync lines update the live
+      // bubble. These checks run before the review-page branch below so the
+      // counts are never swallowed by the generic score narration.
+      if (/review scan:\s*checking all answers/.test(line)) { enterReviewScan(); return; }
+      const scanResult = line.match(/review scan:\s*verified & saved\s+(\d+)\s+answers?(?:\s*\((\d+)\s+new\))?/);
+      if (scanResult) {
+        noteReviewScanResult(Number(scanResult[1]), scanResult[2] == null ? null : Number(scanResult[2]));
+        return;
+      }
+      if (/^review scan:/.test(line)) {
+        if (reviewScan.active) scheduleReviewScanStop(2500); // "no questions to check"
+        return;
+      }
+      if (/^github sync:/.test(line)) {
+        const pushed = line.match(/\+\s*(\d+)/);
+        noteGitHubSync(/✓/.test(line), pushed ? Number(pushed[1]) : 0);
+        return;
+      }
 
       if (isReviewPage() || /review page:/.test(line)) {
         enterReview();
@@ -1641,8 +2797,8 @@ try {
 
       const actionKind = classifyLogAction(line);
       if (actionKind) {
-        // `Typed:` → typing.gif, `Selected:` / `Matched:` / `Ticked` / `Option N`
-        // / `Dropdown N` / `Tier N` → clicking.gif. An ambiguous answer line falls
+        // `Typed:` → typing, `Selected:` / `Matched:` / `Ticked` / `Option N`
+        // / `Dropdown N` / `Tier N` → clicking. An ambiguous answer line falls
         // back to the DOM hint (filled text box vs. checked option).
         enterAnswering(null, actionKind === 'answer' ? '' : actionKind);
         return;
@@ -1801,6 +2957,31 @@ try {
         return;
       }
 
+      // Claim/release the one shared cat (hidden until the record says this tab
+      // owns it), then start the catnap watchdog.
+      try {
+        initPresence();
+      } catch (error) {
+        warnOnce('presence-boot', error);
+      }
+
+      try {
+        lastInteractionAt = Date.now();
+        document.addEventListener('visibilitychange', onVisibilityChange, { passive: true });
+        window.addEventListener('focus', onTabFocus, { passive: true });
+        // "The user is here" bookkeeping only: passive listeners that just stamp
+        // a timestamp, so nothing about page behaviour changes.
+        const interactionEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
+        interactionEvents.forEach((name) => {
+          document.addEventListener(name, markInteraction, { capture: true, passive: true });
+        });
+        napTickTimer = setInterval(() => {
+          try { napTick(); } catch (error) { warnOnce('nap-tick', error); }
+        }, NAP_TICK_MS);
+      } catch (error) {
+        warnOnce('nap-boot', error);
+      }
+
       try {
         if (isReviewPage()) {
           setState('review');
@@ -1844,7 +3025,7 @@ try {
       try {
         const detail = (event && event.detail) || {};
         const next = typeof detail === 'string' ? detail : String(detail.state || '');
-        if (ASSETS[next]) setState(next);
+        if (isKnownState(next)) setState(next);
       } catch (error) {
         warnOnce('external-state', error);
       }

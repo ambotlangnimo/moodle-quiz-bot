@@ -3,11 +3,19 @@
    Never intercepts page clicks except its own buttons.
 
    Layout: the HUD host sits 165px from the right edge so the standalone
-   roaming mascot (extension/mascot.js, 130 px, parked bottom-right and
-   wandering Shimeji-style) can never cover the Run / Stop / Clear / Harvest
-   buttons. All mascot styling lives in mascot.js — this file only styles the
-   closed-shadow HUD.
+   roaming mascot (extension/mascot.js, a 130 px pixel-art canvas, parked
+   bottom-right and wandering Shimeji-style) can never cover the Run / Stop /
+   Clear / Harvest buttons. All mascot styling lives in mascot.js — this file
+   only styles the closed-shadow HUD plus the light-DOM harvester HUD below.
    ───────────────────────────────────────────────────────────────────────────── */
+
+/* The mascot is a 96×96 pixel-art canvas scaled up: keep every sprite pixel a
+   crisp square even if a host page tries to smooth images globally. The rule is
+   a no-op for every other element (mascot.js styles him too). */
+#qb-mascot-wrap canvas {
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
 
 :host {
   all: initial;
@@ -293,7 +301,8 @@
 
    Status chips reuse the Moodle class names (running / stopped / waiting /
    reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot
-   recognises harvest progress and narrates it with harvesting.gif / review.gif.
+   recognises harvest progress and narrates it with its harvesting / review
+   pixel animations.
    ───────────────────────────────────────────────────────────────────────────── */
 
 #qb-hud {

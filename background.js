@@ -1162,6 +1162,14 @@ case 'getAnswerKey': {
       return { _reqId, ...result };
     }
 
+    case 'GET_CURRENT_TAB_ID': {
+      // Content scripts ask once at boot so the mascot knows which tab it lives
+      // in. `sender.tab` is only present for tab-hosted senders, so a stray call
+      // from an extension page just answers null (single-tab fallback).
+      const tabId = sender && sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : null;
+      return { _reqId, tabId };
+    }
+
     case 'CHECK_EXTENSION_UPDATE': {
       // Cached for 6 hours unless the caller forces a fresh GitHub lookup.
       const force = payload.force !== undefined ? !!payload.force : !!message.force;

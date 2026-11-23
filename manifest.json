@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.2.1",
-  "description": "Moodle quiz bot + universal Q&A harvester with a roaming 7-cat mascot on every site.",
+  "version": "3.3.1",
+  "description": "Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.",
   "minimum_chrome_version": "114",
   "permissions": [
     "storage",
@@ -32,7 +32,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["hud.css", "mascot/*"],
+      "resources": ["hud.css"],
       "matches": ["<all_urls>"]
     }
   ],
