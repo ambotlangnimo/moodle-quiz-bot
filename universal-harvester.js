@@ -14,6 +14,10 @@
    from storage.js; flushNow() persists the bank and SYNC_GITHUB_BANK pushes the
    verified rows to the ama-quiz-bank GitHub repo.
 
+   BOT_ENABLED (the popup switch, chrome.storage.local + .sync) is watched here:
+   `false` hides the panel / 🐾 pill at once and aborts an in-flight run, `true`
+   brings the panel back — neither needs a page reload.
+
    HUD rows are appended to #qb-log as .hud-log-line.<level> and the status chip
    uses the shared running / stopped / waiting / reviewing classes, so mascot.js
    narrates the run with harvesting.gif and review.gif without extra wiring.
@@ -162,6 +166,11 @@ try {
 
     // Lines produced before the HUD is attached; replayed on mount.
     const pendingLog = [];
+
+    // BOT_ENABLED mirror (the popup switch). When it flips off the panel and the
+    // 🐾 pill are hidden at once and any running harvest is aborted — no reload.
+    let botEnabled = true;
+    let enabledWatched = false;
 
     /* ── Small helpers ──────────────────────────────────────────────────── */
 
@@ -327,6 +336,72 @@ try {
       return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
     }
 
+    /* ── Instant enable/disable (BOT_ENABLED) ───────────────────────────── */
+
+    // popup.js writes BOT_ENABLED to chrome.storage.local and mirrors it to
+    // .sync; local wins when present, `!== false` means enabled.
+    function readBotEnabled(callback) {
+      const done = (value) => { try { callback(value !== false); } catch (error) { /* ignore */ } };
+      try {
+        chrome.storage.local.get('BOT_ENABLED', (local) => {
+          if (chrome.runtime.lastError) { done(true); return; }
+          if (local && local.BOT_ENABLED !== undefined) { done(local.BOT_ENABLED); return; }
+          try {
+            chrome.storage.sync.get('BOT_ENABLED', (sync) => {
+              if (chrome.runtime.lastError) { done(true); return; }
+              done(sync ? sync.BOT_ENABLED : undefined);
+            });
+          } catch (error) { done(true); }
+        });
+      } catch (error) { done(true); }
+    }
+
+    // Show/hide the panel with an inline display: #qb-hud is a flex column, so
+    // restoring with 'flex' keeps the expanded panel and the 🐾 pill identical.
+    function setPanelVisible(visible) {
+      if (!hudEl) return;
+      hudEl.style.display = visible ? 'flex' : 'none';
+    }
+
+    function applyBotEnabled(enabled) {
+      const next = enabled !== false;
+      const changed = next !== botEnabled;
+      botEnabled = next;
+      if (!next) {
+        if (busy) {
+          // Kills the in-flight page/course run immediately.
+          stopRequested = true;
+          if (abortController) {
+            try { abortController.abort(); } catch (error) { /* already aborted */ }
+          }
+          setBusy(false);
+          setStatus('stopped', 'stopped');
+          logHUD('warn', changed ? 'Bot stopped — disabled from the popup.' : 'Bot stopped.');
+        }
+        setPanelVisible(false);
+        return;
+      }
+      setPanelVisible(true);
+      if (changed) logHUD('info', 'Bot enabled — harvester ready.');
+    }
+
+    function watchBotEnabled() {
+      if (enabledWatched) return;
+      enabledWatched = true;
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          try {
+            if (areaName !== 'local' && areaName !== 'sync') return;
+            if (!changes || !changes.BOT_ENABLED) return;
+            const value = changes.BOT_ENABLED.newValue;
+            applyBotEnabled(value === undefined ? true : value);
+          } catch (error) { /* never break the page */ }
+        });
+      } catch (error) { /* storage events unavailable */ }
+      readBotEnabled((enabled) => applyBotEnabled(enabled));
+    }
+
     /* ── HUD construction ───────────────────────────────────────────────── */
 
     function makeButton(id, label, title) {
@@ -363,6 +438,7 @@ try {
         hudEl = existing;
         logEl = existing.querySelector('#' + LOG_ID);
         statusEl = existing.querySelector('#' + STATUS_ID);
+        setPanelVisible(botEnabled);
         return;
       }
 
@@ -427,6 +503,7 @@ try {
       refreshCourseButton();
       setBusy(false);
       setStatus('idle', '');
+      setPanelVisible(botEnabled);
       flushPendingLog();
     }
 
@@ -970,6 +1047,10 @@ try {
     }
 
     async function harvestPage() {
+      if (!botEnabled) {
+        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        return;
+      }
       if (busy) {
         logHUD('warn', 'Harvest is already running.');
         return;
@@ -1118,6 +1199,10 @@ try {
     }
 
     async function harvestCourse() {
+      if (!botEnabled) {
+        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        return;
+      }
       if (busy) {
         logHUD('warn', 'Harvest is already running.');
         return;
@@ -1145,7 +1230,7 @@ try {
 
       try {
         for (let page = 1; page <= MAX_COURSE_PAGES; page += 1) {
-          if (stopRequested) break;
+          if (stopRequested || !botEnabled) break;
           setStatus('page ' + page, 'running');
 
           const url = coursePageUrl(base, page);
@@ -1248,6 +1333,7 @@ try {
       try {
         if (document.getElementById(HUD_ID)) return;
         buildHud();
+        watchBotEnabled();
         logHUD('info', 'Ready on ' + (currentHost() || 'this page') + ' — highlight text or use Harvest Page.');
         if (hasPagination()) {
           logHUD('info', 'Paginated page detected — Harvest Course can walk ?page=1, 2, 3…');

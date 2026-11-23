@@ -50,6 +50,26 @@
      low timer      on /attempt.php, ≤5 min left → review pose + "HALA!! ..." alarm
      review score   .quizreviewsummary ≥90% / ≥75% / <75% celebration lines
 
+   LOCAL CAT BRAIN CORE ("Local Cat Brain Core" below) — zero API keys, zero
+   network. Passive sensors only (the clipboard is never read, keystrokes are
+   counted, never captured):
+     page identity  hostname + cleaned document.title + course code (/[A-Z]{2,4}\d{4}/)
+     typing bursts  keydown count per burst → "12 keys in a burst! Essay mode??"
+     copy / cut     "I saw you copy that!! Saving braincells? 👀📋"
+     cursor         throttled mousemove → pupils follow the pointer, a fast flick
+                    plays the whisker-wiggle dizzy wobble
+     scroll         px/s velocity → "WHOA slow down scrolling!! 🎢🙀"
+     memory         CAT_BRAIN_MEMORY in chrome.storage.local (tabHopsToday,
+                    petCount, copyCount, keyCount, bankCount, day)
+   composeCatThought() fills template pools with that live context (late-night
+   00:00–04:59 lines, YouTube / Messenger / GitHub / AI-tab commentary, bank size,
+   pet and tab-hop counters) and never repeats a recent line.
+
+   SWITCH: popup.js writes BOT_ENABLED to chrome.storage.local (mirrored to
+   .sync). `false` hides the cat and the busy pill on every open tab instantly
+   and stops him claiming ownership; `true` restores him where he belongs.
+   No reload, ever.
+
    ───────────────────────────────────────────────────────────────────────────── */
 try {
   (function () {
@@ -381,6 +401,12 @@ try {
     let lastWorkLockPushAt = 0;
     let sawOtherTabWorking = false;  // the other owner was busy; waiting to hand back
 
+    // BOT_ENABLED mirror (the popup switch): disabled → the cat and the busy pill
+    // vanish from this tab instantly and he stops claiming ownership; enabled →
+    // applyPresence puts him back wherever he belongs.
+    let uiEnabled = true;
+    let uiEnabledWatched = false;
+
     // Catnap: `napping` drives the sleepy CSS mood; `lastInteractionAt` is the
     // newest real user action (page or mascot) that keeps him awake.
     let napping = false;
@@ -545,7 +571,8 @@ try {
     }
 
     // Eyes / muzzle / whiskers. `happy` → closed ^ ^ eyes, `focus` → looking down
-    // (reading glasses), `blink` → flat lines.
+    // (reading glasses), `blink` → flat lines, `look` → pupils track the cursor
+    // (−1 left, 0 centre, +1 right) fed by the local brain's mousemove sensor.
     function drawFace(dy, opts) {
       const o = opts || {};
       px(9, 6 + dy, P.furDark, 2, 1);
@@ -566,13 +593,15 @@ try {
         px(9, 9 + dy, P.outline, 2, 1);
         px(13, 9 + dy, P.outline, 2, 1);
       } else {
+        const look = o.look || 0;
         px(9, 8 + dy, P.eye, 2, 2);
         px(13, 8 + dy, P.eye, 2, 2);
         const pupilRow = 8 + dy + (o.focus ? 1 : 0);
-        px(9, pupilRow, P.pupil);
-        px(14, pupilRow, P.pupil);
-        px(10, 8 + dy, P.white);
-        px(13, 8 + dy, P.white);
+        // Pupil slides inside the 2 px eye; the highlight takes the freed pixel.
+        px(look > 0 ? 10 : 9, pupilRow, P.pupil);
+        px(look < 0 ? 13 : 14, pupilRow, P.pupil);
+        px(look > 0 ? 9 : 10, 8 + dy, P.white);
+        px(look < 0 ? 14 : 13, 8 + dy, P.white);
       }
     }
 
@@ -781,6 +810,7 @@ try {
         blink,
         happy: state === 'answering' && tick % 2 === 0,
         focus: state === 'review',
+        look: state === 'review' ? 0 : gazeLook, // reading glasses stare at the paper
       });
       if (state !== 'typing' && state !== 'harvesting') drawPaws(dy, walking, step);
 
@@ -873,6 +903,15 @@ try {
 .${IMG_CLASS}:active { cursor: grabbing; }
 .${IMG_CLASS}.qb-hop { animation: qbMascotHop 0.45s ease-out; }
 .${IMG_CLASS}.qb-review { animation: qbMascotGlow 2s ease-in-out infinite; }
+/* Local brain: fast cursor flick → whisker-wiggle dizzy wobble. */
+.${IMG_CLASS}.qb-dizzy { animation: qbMascotDizzy 0.3s ease-in-out 4; }
+@keyframes qbMascotDizzy {
+  0%   { rotate: 0deg; translate: 0 0; }
+  25%  { rotate: -7deg; translate: -2px 1px; }
+  50%  { rotate: 0deg; translate: 0 -2px; }
+  75%  { rotate: 7deg; translate: 2px 1px; }
+  100% { rotate: 0deg; translate: 0 0; }
+}
 @keyframes qbMascotHop {
   0%   { translate: 0 0; }
   45%  { translate: 0 -10px; }
@@ -1104,9 +1143,10 @@ try {
       return rememberPick(pool, pick);
     }
 
-    // Idle chatter draws from the big IDLE_QUOTES pool.
+    // Idle chatter: the local brain composes from live context (title, course,
+    // time, bank size, tab hops…) and falls back to the classic quote pool.
     function randomQuote() {
-      return pickFreshLine(IDLE_QUOTES);
+      return composeCatThought('idle') || pickFreshLine(IDLE_QUOTES);
     }
 
     // Temporary animation overlay (double-click cheer, low-timer panic): play
@@ -1323,6 +1363,7 @@ try {
     }
 
     function claimBusy(state) {
+      if (!uiEnabled) return; // the popup switch is off: this tab must not own him
       if (!BUSY_LABELS[state]) return;
       if (presence.ownerTabId === myTabId && presence.busyState === state) return; // heartbeat covers it
       pushPresence(state, BUSY_LABELS[state]);
@@ -1341,6 +1382,7 @@ try {
     // only when the cat was somewhere else before, so a plain page load stays
     // quiet.
     function claimIdle(follow) {
+      if (!uiEnabled) return;
       if (!presenceEnabled || myTabId == null) return;
       try {
         if (document.visibilityState !== 'visible') return;
@@ -1372,6 +1414,7 @@ try {
     // work lock ("Bot stopped" / "Harvested" / "Quiz complete") hands the idle cat
     // back to the tab the user is actually looking at.
     function presenceTick() {
+      if (!uiEnabled) return;
       if (!presenceReady || !presenceEnabled) return;
       applyPresence();
       const otherOwner = presence.ownerTabId != null && presence.ownerTabId !== myTabId;
@@ -1436,6 +1479,7 @@ try {
 
     function showPill(show, text) {
       if (!pillEl) return;
+      if (!uiEnabled) { pillEl.classList.remove(PILL_CLASS); return; }
       const label = text || PILL_TEXT;
       if (pillEl.textContent !== label) pillEl.textContent = label;
       let visible = true;
@@ -1448,6 +1492,8 @@ try {
     // keeps #qb-mascot-wrap at display:none and shows the busy pill instead.
     function applyPresence() {
       if (!wrapEl) return;
+      // Disabled in the popup: nothing of the mascot exists on this tab at all.
+      if (!uiEnabled) { hideCat(); showPill(false); return; }
       if (!presenceReady) { hideCat(); showPill(false); return; }
       if (!presenceEnabled) { showCat(); showPill(false); return; } // single-tab fallback
       const busyElsewhere = otherTabIsBusy();
@@ -1463,6 +1509,64 @@ try {
       hideCat();
     }
 
+    /* ── Instant enable/disable (BOT_ENABLED) ─────────────────────────────── */
+
+    // popup.js writes BOT_ENABLED to chrome.storage.local and mirrors it to
+    // .sync; local wins when present, `!== false` means enabled.
+    function readBotEnabled(callback) {
+      const done = (value) => { try { callback(value !== false); } catch (error) { /* ignore */ } };
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage) { done(true); return; }
+        chrome.storage.local.get('BOT_ENABLED', (local) => {
+          try { if (chrome.runtime.lastError) { done(true); return; } } catch (error) { /* ignore */ }
+          if (local && local.BOT_ENABLED !== undefined) { done(local.BOT_ENABLED); return; }
+          try {
+            chrome.storage.sync.get('BOT_ENABLED', (sync) => {
+              try { if (chrome.runtime.lastError) { done(true); return; } } catch (error) { /* ignore */ }
+              done(sync ? sync.BOT_ENABLED : undefined);
+            });
+          } catch (error) { done(true); }
+        });
+      } catch (error) { done(true); }
+    }
+
+    // Disabled: cat + pill gone and every idle timer stopped. Enabled: the shared
+    // presence record decides who shows him again (exactly one tab, as always).
+    function applyUiEnabled(enabled) {
+      const next = enabled !== false;
+      const changed = next !== uiEnabled;
+      uiEnabled = next;
+      if (!next) {
+        hideCat();
+        showPill(false);
+        if (wrapEl) wrapEl.style.display = 'none';
+        if (pillEl) pillEl.classList.remove(PILL_CLASS);
+        if (napQuoteTimer) { clearTimeout(napQuoteTimer); napQuoteTimer = null; }
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        overlayState = '';
+        return;
+      }
+      if (changed) applyPresence();
+    }
+
+    function watchUiEnabled() {
+      if (uiEnabledWatched) return;
+      uiEnabledWatched = true;
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+          chrome.storage.onChanged.addListener((changes, areaName) => {
+            try {
+              if (areaName !== 'local' && areaName !== 'sync') return;
+              if (!changes || !changes.BOT_ENABLED) return;
+              const value = changes.BOT_ENABLED.newValue;
+              applyUiEnabled(value === undefined ? true : value);
+            } catch (error) { warnOnce('ui-toggle-change', error); }
+          });
+        }
+      } catch (error) { /* storage events unavailable */ }
+      readBotEnabled((enabled) => applyUiEnabled(enabled));
+    }
+
     // Every state change runs through here: working states claim the cat, idle
     // hands it back to whichever tab the user is on.
     function syncPresenceForState(state) {
@@ -1470,11 +1574,570 @@ try {
       // record is ready (the state's own bubble takes over right after).
       if (state === 'idle') wakeFromNap(null);
       else if (BUSY_LABELS[state]) wakeFromNap(WAKE_LINE);
+      if (!uiEnabled) return; // disabled in the popup: never claim the cat
       if (!presenceReady || !presenceEnabled) return;
       if (BUSY_LABELS[state]) { claimBusy(state); return; }
       if (state === 'idle') releaseBusy();
     }
 
+
+    /* ── Local Cat Brain Core — zero API keys, zero network ──────────────── */
+
+    // Everything below is local: page identity, a privacy-safe keystroke count, a
+    // copy reaction, cursor movement and scroll velocity feed a template composer.
+    // No fetch(), no provider call, no key — the cat is chatty offline.
+    const BRAIN_KEY = 'CAT_BRAIN_MEMORY';
+    const BRAIN_SAVE_MS = 1200;         // debounce: one storage write per burst
+    const TYPE_BURST_MS = 1400;         // a pause this long closes a typing burst
+    const TYPE_BURST_MIN = 12;          // keys per burst before he comments
+    const CURSOR_SAMPLE_MS = 90;        // mousemove sampling floor (~11 Hz)
+    const CURSOR_DIZZY_SPEED = 3800;    // px/s → whisker-wiggle dizzy (a real flick)
+    const DIZZY_HOLD_MS = 1200;
+    const DIZZY_COOLDOWN_MS = 12000;
+    const SCROLL_SPEED = 3400;          // px/s → "WHOA slow down scrolling!!"
+    const SCROLL_COOLDOWN_MS = 9000;
+    const THOUGHT_MEMORY = 14;          // remember this many lines to avoid repeats
+    const COPY_LINE = 'I saw you copy that!! Saving braincells? 👀📋';
+    const DIZZY_LINES = [
+      'Whoa— dizzy!! My whiskers are spinning!! 🌀🙀',
+      'Slow paws!! You are making me seasick. 🐾💫',
+      'Wheee— my eyes cannot keep up!! 😵‍💫',
+      'Is the mouse running a marathon? 😹💨',
+    ];
+    const SCROLL_LINES = [
+      'WHOA slow down scrolling!! 🎢🙀',
+      'You are scrolling like the answer is hiding! 🐾💨',
+      'SCROLL SLOWER. My paws are smoking. 🔥🐾',
+      'Racing to the bottom? The questions are still up there! 😾⬆️',
+    ];
+    const TYPING_BRAIN_LINES = [
+      '{keys} keys in a burst! Essay mode?? ✍️😼',
+      'Tap tap tap… {keys} keystrokes. I heard all of them. 👂🐾',
+      'Your keyboard is getting a workout: {keys} keys! ⌨️💪',
+      'Writing a novel over there? {keys} keys already! 📖😹',
+    ];
+    const GENERIC_BRAIN_LINES = [
+      'Just vibing on {host}. 🐾',
+      'Still here! Still a cat. 🐱',
+      'Plot twist: the answer was in your notes all along. 📓',
+      'My tail is a metronome for your productivity. 🎵',
+      'Blink test… yep, still working. 😼',
+      'I give this tab a 9/10 for nap-ability. 😴',
+      'If in doubt, re-read the question. Trust me. 🙀',
+      'Your mouse cursor is my favourite toy. 🐁',
+      'Whisker status: fully calibrated. ✨',
+      'Ten more minutes and I am napping on your keyboard. ⌨️',
+      'Psst… stretch your shoulders. I will wait. 🧘',
+      'I have no thumbs, yet here we are, working. 🐾',
+      'Reminder: you are doing better than you think. 💛',
+      'Loading more brain cells… ▓▓▓░░ 60% 🧠',
+    ];
+    const TITLE_BRAIN_LINES = [
+      '"{title}" — sounds important. Ears up! 🐱📖',
+      'So we are on "{title}" now. Noted. 📝',
+      '"{title}"? I could summarise that in one meow. 😼',
+      'This page is called "{title}". Fancy. 🎩',
+      '"{title}"… reading it with my strongest reading glasses. 🤓',
+    ];
+
+
+    const COURSE_BRAIN_LINES = [
+      '{course} again? We own this subject now. 💪',
+      '{course} detected. Braincells, assemble! 🧠⚡',
+      'A wild {course} problem appears. I believe in you. 🐾',
+      '{course}? My whiskers say you already know this. ✨',
+    ];
+    const BANK_BRAIN_LINES = [
+      'I am carrying {bank} answers in my little cat backpack. 🎒',
+      '{bank} answers stored. That is a lot of fish. 🐟',
+      'My brain bank holds {bank} questions and counting! 🧠📚',
+    ];
+    const HOP_BRAIN_LINES = [
+      '{hops} tabs today. My paws are tired. 🐾',
+      'Tab hop #{hops}. I am basically a parkour cat now. 🏃',
+      'We have visited {hops} tabs today — adventurous! 🗺️',
+    ];
+    const PET_BRAIN_LINES = [
+      'That is {pets} pets so far. I am keeping score. 😽',
+      '{pets} pets! My fur has never been fluffier. ✨',
+      'Pet #{pets} accepted. Purring engaged. 💛',
+    ];
+    const NIGHT_LINES = [
+      'It is {time}. The late-night study arc is real. 🌙😾',
+      '{time}?? Sleep is also a strategy, you know. 🛏️',
+      'Night owl mode: ON. I will keep watch. 🦉🐾',
+      'At {time} even my whiskers are sleepy. 😴',
+      'Late-night brain: 10% logic, 90% vibes. 🌌',
+      'The house is quiet, {host} is open. Cozy. 🌙',
+    ];
+    // Site-specific commentary, keyed by the hostname buckets below.
+    const SITE_LINES = {
+      youtube: [
+        'YouTube again? One video, then back to work. Promise? 📺😼',
+        'I will allow exactly one cat video. Then we study. 🐈📹',
+        'Autoplay is a trap and you know it. ⏭️🙀',
+        'Is this "research"? Because it looks like cat videos. 🐾👀',
+      ],
+      messenger: [
+        'Chatting? Say hi from me. 🐾💬',
+        'Tell them a cat says the answers are in the notes. 😼📚',
+        'Messenger pings and my ears twitch every time. 👂✨',
+        'One reply, then back to the questions. Deal? 🤝🐾',
+      ],
+      github: [
+        'GitHub! Pushing answers or pushing code? 🐙✨',
+        'Green squares are basically catnip for you. 🟩😹',
+        'Commit early, commit often, then pet the cat. 🐾💾',
+        'I reviewed your commits. Very fluffy. LGTM. ✅',
+      ],
+      ai: [
+        'Another AI tab? Am I not enough?! 😾🤖',
+        'Ask them, sure… but I already had the vibe of the answer. 🔮',
+        'Two AIs and one cat in one browser. Bold. 🧠🐾',
+        'I hope that one also knows the answers. 👀✨',
+      ],
+    };
+    const AI_HOSTS_RE = /(^|\.)(chatgpt\.com|chat\.openai\.com|claude\.ai|gemini\.google\.com|perplexity\.ai|copilot\.microsoft\.com|deepseek\.com|grok\.com|x\.ai)$/i;
+    const STUDY_HOSTS_RE = /(amaes\.com|amauoed\.com|quizlet\.com|studocu\.com|brainly\.|coursehero\.com|scribd\.com|moodle)/i;
+
+    // `gazeLook` is read by drawFace(): -1 pupils left, 0 centre, +1 right.
+    let gazeLook = 0;
+    let dizzyTimer = null;
+
+    const brain = {
+      started: false,
+      loaded: false,
+      saveTimer: null,
+      day: '',
+      tabHopsToday: 0,
+      petCount: 0,
+      copyCount: 0,
+      keyCount: 0,
+      bankCount: 0,
+      host: '',
+      cleanTitle: '',
+      courseCode: '',
+      timeStr: '',
+      lastThought: '',
+      recent: [],
+      typing: { keys: 0, timer: null },
+      cursor: { x: 0, y: 0, at: 0, speed: 0, lastDizzyAt: 0, samples: 0 },
+      scroll: { y: 0, at: 0, lastAlarmAt: 0 },
+    };
+
+    /* ── Brain: live context (all local, all read-only) ───────────────────── */
+
+    function todayKey() {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return now.getFullYear() + '-' + month + '-' + day;
+    }
+
+    // Site buckets used for the commentary below.
+    function siteKind(host) {
+      const value = String(host || brain.host || '').toLowerCase();
+      if (!value) return '';
+      if (/(^|\.)(youtube\.com|youtu\.be)$/.test(value)) return 'youtube';
+      if (/(^|\.)(messenger\.com|facebook\.com|web\.whatsapp\.com|discord\.com|instagram\.com|t\.me|telegram\.org)$/.test(value)) return 'messenger';
+      if (/(^|\.)(github\.com|gist\.github\.com|gitlab\.com)$/.test(value)) return 'github';
+      if (AI_HOSTS_RE.test(value)) return 'ai';
+      return '';
+    }
+
+    function cleanPageTitle(raw) {
+      let text = norm(raw);
+      if (!text) return '';
+      text = text
+        .replace(/^\(\d+\+?\)\s*/, '')  // "(3) Messenger"
+        .replace(/\s*[·|–—-]\s*(?:YouTube|Messenger|GitHub|Google\s+Chrome|Moodle|Quizlet|Studocu|Brainly|Course\s*Hero|Scribd)\s*$/i, '')
+        .replace(/\s*\|\s*.*$/, '')     // "Course | Site"
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text.length > 64) text = text.slice(0, 61).trim() + '…';
+      return text;
+    }
+
+    // ECON1012 / IT3010 / CS101 → the course code the cat can nod at.
+    function courseCodeFrom(text) {
+      const raw = String(text || '');
+      const strict = raw.match(/\b[A-Z]{2,4}\d{4}\b/);
+      if (strict) return strict[0];
+      // Tab titles are often lowercased upstream: retry, then normalise.
+      const loose = raw.match(/\b([A-Za-z]{2,4})(\d{4})\b/);
+      return loose ? (loose[1] + loose[2]).toUpperCase() : '';
+    }
+
+    function refreshBrainContext() {
+      try {
+        if (typeof location !== 'undefined' && location.hostname) {
+          brain.host = String(location.hostname).replace(/^www\./i, '');
+        }
+      } catch (error) { /* keep the old host */ }
+      const rawTitle = (typeof document !== 'undefined' && document.title) || '';
+      brain.cleanTitle = cleanPageTitle(rawTitle);
+      brain.courseCode = courseCodeFrom(rawTitle) || courseCodeFrom(brain.cleanTitle);
+      let time = '';
+      try { time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (error) { time = ''; }
+      brain.timeStr = time;
+      return brain;
+    }
+
+    function isLateNight() {
+      const hour = new Date().getHours();
+      return hour >= 0 && hour < 5; // 00:00 – 04:59
+    }
+
+    /* ── Brain: the dynamic sentence composer ─────────────────────────────── */
+
+    function thoughtContext(extra) {
+      refreshBrainContext();
+      const ctx = {
+        title: brain.cleanTitle || 'this page',
+        host: brain.host || 'this page',
+        course: brain.courseCode,
+        time: brain.timeStr || '',
+        bank: brain.bankCount ? String(brain.bankCount) : '',
+        hops: brain.tabHopsToday ? String(brain.tabHopsToday) : '',
+        pets: brain.petCount ? String(brain.petCount) : '',
+        keys: brain.keyCount ? String(brain.keyCount) : '',
+      };
+      if (extra && typeof extra === 'object') {
+        Object.keys(extra).forEach((key) => { ctx[key] = String(extra[key]); });
+      }
+      return ctx;
+    }
+
+    // `{slot}` → live value. A line that needs data we do not have is dropped
+    // instead of showing an empty hole ("{course} again?" with no code).
+    function fillThought(template, ctx) {
+      let missing = false;
+      const filled = String(template || '').replace(/\{(\w+)\}/g, (match, key) => {
+        const value = ctx[key];
+        if (!value) { missing = true; return ''; }
+        return value;
+      });
+      return missing ? '' : filled;
+    }
+
+    function rememberThought(line) {
+      brain.lastThought = line;
+      brain.recent.push(line);
+      while (brain.recent.length > THOUGHT_MEMORY) brain.recent.shift();
+    }
+
+    // The whole brain in one call: collect every pool that fits the moment, fill
+    // the slots, then pick a line that was not used recently. `kind` is
+    // 'idle' | 'pet' | 'hype' | 'typing' | 'copy' | 'scroll' | 'dizzy'.
+    function composeCatThought(kind, extra) {
+      try {
+        const mode = kind || 'idle';
+        const ctx = thoughtContext(extra);
+        const pool = [];
+        const add = (list) => { if (Array.isArray(list)) list.forEach((line) => pool.push(line)); };
+        if (mode === 'copy') add([COPY_LINE]);
+        else if (mode === 'scroll') add(SCROLL_LINES);
+        else if (mode === 'dizzy') add(DIZZY_LINES);
+        else if (mode === 'typing') add(TYPING_BRAIN_LINES);
+        else if (mode === 'pet') { add(PET_LINES); add(PET_BRAIN_LINES); add(TITLE_BRAIN_LINES); }
+        else if (mode === 'hype') {
+          add(HYPE_LINES);
+          add(TITLE_BRAIN_LINES);
+          if (brain.courseCode) add(COURSE_BRAIN_LINES);
+          if (isLateNight()) add(NIGHT_LINES);
+        } else {
+          add(GENERIC_BRAIN_LINES);
+          if (isLateNight()) add(NIGHT_LINES);
+          const site = siteKind();
+          if (site) add(SITE_LINES[site]);
+          add(TITLE_BRAIN_LINES);
+          if (brain.courseCode) add(COURSE_BRAIN_LINES);
+          if (brain.bankCount) add(BANK_BRAIN_LINES);
+          if (brain.tabHopsToday > 1) add(HOP_BRAIN_LINES);
+          if (brain.petCount) add(PET_BRAIN_LINES);
+        }
+        const fresh = [];
+        const seen = new Set();
+        pool.forEach((template) => {
+          const line = fillThought(template, ctx);
+          if (!line || seen.has(line)) return;
+          seen.add(line);
+          if (brain.recent.indexOf(line) !== -1) return;
+          if (line === lastBubbleText) return;
+          fresh.push(line);
+        });
+        const candidates = fresh.length ? fresh : Array.from(seen);
+        if (!candidates.length) return mode === 'idle' ? pickFreshLine(IDLE_QUOTES) : '';
+        const pick = candidates[Math.floor(Math.random() * candidates.length)];
+        rememberThought(pick);
+        return pick;
+      } catch (error) {
+        warnOnce('brain-compose', error);
+        return '';
+      }
+    }
+
+    /* ── Brain: persistence (CAT_BRAIN_MEMORY in chrome.storage.local) ────── */
+
+    // Daily counters: tabHopsToday + keystroke/copy counts restart on a new day,
+    // petCount and the bank count are lifetime numbers.
+    function rollBrainDay() {
+      const today = todayKey();
+      if (brain.day === today) return;
+      brain.day = today;
+      brain.tabHopsToday = 0;
+      brain.keyCount = 0;
+      brain.copyCount = 0;
+    }
+
+    function saveBrain() {
+      if (brain.saveTimer) return; // debounced: one write per burst
+      brain.saveTimer = setTimeout(() => {
+        brain.saveTimer = null;
+        try {
+          if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
+          const payload = {
+            day: brain.day,
+            tabHopsToday: brain.tabHopsToday,
+            petCount: brain.petCount,
+            copyCount: brain.copyCount,
+            keyCount: brain.keyCount,
+            bankCount: brain.bankCount,
+            updatedAt: Date.now(),
+          };
+          chrome.storage.local.set({ [BRAIN_KEY]: payload }, () => {
+            try { void chrome.runtime.lastError; } catch (error) { /* no listener left */ }
+          });
+        } catch (error) { warnOnce('brain-save', error); }
+      }, BRAIN_SAVE_MS);
+    }
+
+    function loadBrain() {
+      rollBrainDay();
+      try {
+        if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+          brain.loaded = true;
+          return;
+        }
+        // Only study hosts pay for reading the (large) answer cache; every other
+        // tab reuses the count persisted in CAT_BRAIN_MEMORY.
+        const keys = [BRAIN_KEY];
+        if (STUDY_HOSTS_RE.test(brain.host || '')) keys.push('answerkey_cache');
+        chrome.storage.local.get(keys, (data) => {
+          try {
+            if (!chrome.runtime.lastError && data && data[BRAIN_KEY] && typeof data[BRAIN_KEY] === 'object') {
+              const stored = data[BRAIN_KEY];
+              brain.day = typeof stored.day === 'string' && stored.day ? stored.day : brain.day;
+              brain.tabHopsToday = Number(stored.tabHopsToday) || 0;
+              brain.petCount = Number(stored.petCount) || 0;
+              brain.copyCount = Number(stored.copyCount) || 0;
+              brain.keyCount = Number(stored.keyCount) || 0;
+              brain.bankCount = Number(stored.bankCount) || 0;
+            }
+            // One read buys both the stats and the live stored-answer count.
+            const cache = data && data.answerkey_cache;
+            if (cache && typeof cache === 'object') brain.bankCount = Object.keys(cache).length;
+          } catch (error) { warnOnce('brain-load', error); }
+          rollBrainDay();
+          brain.loaded = true;
+          refreshBankCount();
+        });
+      } catch (error) {
+        warnOnce('brain-load', error);
+        brain.loaded = true;
+      }
+    }
+
+    // Free refresh on study hosts (storage.js already holds the cache in memory);
+    // everywhere else the persisted count is reused, so no tab pays for a 100 KB
+    // read just to say "I have 240 answers".
+    function refreshBankCount() {
+      try {
+        if (typeof answerKeyCount !== 'function') return;
+        if (!STUDY_HOSTS_RE.test(brain.host || '')) return;
+        Promise.resolve(answerKeyCount()).then((count) => {
+          const next = Number(count) || 0;
+          if (next === brain.bankCount) return;
+          brain.bankCount = next;
+          saveBrain();
+        }).catch(() => {});
+      } catch (error) { /* storage helpers unavailable */ }
+    }
+
+    function recordTabHop() {
+      try {
+        rollBrainDay();
+        brain.tabHopsToday += 1;
+        saveBrain();
+      } catch (error) { warnOnce('brain-hop', error); }
+    }
+
+    function recordPet() {
+      try {
+        brain.petCount += 1;
+        saveBrain();
+      } catch (error) { warnOnce('brain-pet', error); }
+    }
+
+    /* ── Brain: real-time sensors (privacy-safe, never block the page) ─────── */
+
+    // Typing bursts: COUNT ONLY. The `key` is inspected to decide "printable
+    // character?" and thrown away — nothing typed is stored or logged.
+    function onBrainKeydown(event) {
+      try {
+        if (!uiEnabled || !event) return;
+        const key = event.key;
+        if (typeof key !== 'string' || key.length !== 1) return;
+        brain.keyCount += 1;
+        brain.typing.keys += 1;
+        saveBrain();
+        if (brain.typing.timer) return;
+        brain.typing.timer = setTimeout(flushTypingBurst, TYPE_BURST_MS);
+      } catch (error) { warnOnce('brain-keydown', error); }
+    }
+
+    function flushTypingBurst() {
+      brain.typing.timer = null;
+      const keys = brain.typing.keys;
+      brain.typing.keys = 0;
+      if (keys < TYPE_BURST_MIN) return;
+      if (!catActive() || currentState !== 'idle' || overlayState) return;
+      const line = composeCatThought('typing', { keys: String(keys) });
+      if (!line) return;
+      setBubble(line, true);
+      scheduleQuote();
+    }
+
+    // Copy / cut: a pure reaction. The clipboard itself is never read.
+    function onBrainCopy() {
+      try {
+        if (!uiEnabled) return;
+        brain.copyCount += 1;
+        saveBrain();
+        if (!catShown()) return;
+        markInteraction();
+        if (napping) { wakeFromNap(COPY_LINE); return; }
+        // Only chatty while idle: a working-state bubble (answer picked, page
+        // turning …) is information the user needs more than a joke.
+        if (currentState !== 'idle' || overlayState) return;
+        setBubble(COPY_LINE, true);
+        scheduleQuote();
+      } catch (error) { warnOnce('brain-copy', error); }
+    }
+
+    // Cursor: throttled sampling drives the pupils (eye tracking) and a fast
+    // flick triggers the whisker-wiggle dizzy reaction.
+    function onBrainMousemove(event) {
+      try {
+        if (!uiEnabled || !event || !wrapEl || wrapEl.style.display === 'none') return;
+        const sample = brain.cursor;
+        const now = Date.now();
+        if (sample.at && now - sample.at < CURSOR_SAMPLE_MS) return;
+        const x = Number(event.clientX) || 0;
+        const y = Number(event.clientY) || 0;
+        const dt = sample.at ? now - sample.at : 0;
+        if (dt > 0) sample.speed = Math.hypot(x - sample.x, y - sample.y) / (dt / 1000);
+        sample.x = x;
+        sample.y = y;
+        sample.at = now;
+        sample.samples += 1;
+        updateGaze(x);
+        if (sample.speed < CURSOR_DIZZY_SPEED) return;
+        if (now - sample.lastDizzyAt < DIZZY_COOLDOWN_MS) return;
+        if (!catActive() || currentState !== 'idle' || overlayState) return;
+        sample.lastDizzyAt = now;
+        dizzyReaction();
+      } catch (error) { warnOnce('brain-mousemove', error); }
+    }
+
+    // Pupils lean towards the cursor: ±1 sprite pixel, read by drawFace().
+    function updateGaze(cursorX) {
+      const rect = rectFor(catEl);
+      if (!rect) return;
+      const offset = cursorX - (rect.left + rect.width / 2);
+      gazeLook = Math.abs(offset) < 26 ? 0 : (offset < 0 ? -1 : 1);
+    }
+
+    function dizzyReaction() {
+      try {
+        if (catEl) {
+          catEl.classList.remove('qb-dizzy');
+          void catEl.offsetWidth; // restart the wobble
+          catEl.classList.add('qb-dizzy');
+          if (dizzyTimer) clearTimeout(dizzyTimer);
+          dizzyTimer = setTimeout(() => {
+            dizzyTimer = null;
+            if (catEl) catEl.classList.remove('qb-dizzy');
+          }, DIZZY_HOLD_MS);
+        }
+      } catch (error) { warnOnce('brain-dizzy', error); }
+      const line = composeCatThought('dizzy');
+      if (!line) return;
+      setBubble(line, true);
+      scheduleQuote();
+    }
+
+    // Scroll velocity (px/s), measured between two passive scroll events.
+    function onBrainScroll() {
+      try {
+        if (!uiEnabled) return;
+        const now = Date.now();
+        const y = Number(window.scrollY || window.pageYOffset || 0);
+        const state = brain.scroll;
+        if (!state.at) { state.y = y; state.at = now; return; }
+        const dt = now - state.at;
+        if (dt < 80) return;
+        const speed = Math.abs(y - state.y) / (dt / 1000);
+        state.y = y;
+        state.at = now;
+        if (speed < SCROLL_SPEED) return;
+        if (now - state.lastAlarmAt < SCROLL_COOLDOWN_MS) return;
+        if (!catActive() || currentState !== 'idle' || overlayState) return;
+        state.lastAlarmAt = now;
+        const line = composeCatThought('scroll');
+        if (!line) return;
+        setBubble(line, true);
+        scheduleQuote();
+      } catch (error) { warnOnce('brain-scroll', error); }
+    }
+
+    // Boot the brain: stats first, then the passive listeners. Nothing here can
+    // click, type, navigate or cancel a page event.
+    function startBrain() {
+      if (brain.started) return;
+      brain.started = true;
+      refreshBrainContext();
+      loadBrain();
+      try {
+        document.addEventListener('keydown', onBrainKeydown, { capture: true, passive: true });
+        document.addEventListener('copy', onBrainCopy, { capture: true, passive: true });
+        document.addEventListener('cut', onBrainCopy, { capture: true, passive: true });
+        document.addEventListener('mousemove', onBrainMousemove, { passive: true });
+        window.addEventListener('scroll', onBrainScroll, { passive: true });
+        window.addEventListener('popstate', refreshBrainContext, { passive: true });
+        window.addEventListener('hashchange', refreshBrainContext, { passive: true });
+        // SPA route changes rewrite <title>: follow it so the commentary stays live.
+        const titleNode = document.querySelector('title');
+        if (titleNode && typeof MutationObserver === 'function') {
+          new MutationObserver(() => refreshBrainContext())
+            .observe(titleNode, { childList: true, characterData: true, subtree: true });
+        }
+      } catch (error) { warnOnce('brain-sensors', error); }
+      // A bank write (harvest / learned answer) updates the count in the bubble.
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+          chrome.storage.onChanged.addListener((changes, areaName) => {
+            try {
+              if (areaName !== 'local' || !changes || !changes.answerkey_cache) return;
+              const cache = changes.answerkey_cache.newValue;
+              if (!cache || typeof cache !== 'object') return;
+              brain.bankCount = Object.keys(cache).length;
+              saveBrain();
+            } catch (error) { warnOnce('brain-bank-change', error); }
+          });
+        }
+      } catch (error) { /* storage events unavailable */ }
+    }
 
     /* ── Catnap: "doing cat things" while idle ────────────────────────────── */
 
@@ -1588,6 +2251,8 @@ try {
         if (document.visibilityState === 'visible') {
           markInteraction();
           wakeFromNap(null); // coming back to the tab gets him up
+          recordTabHop();    // local brain stat: how many tabs today
+          if (!uiEnabled) return;
           // Switching tabs must never steal the cat while a quiz run or a harvest
           // is still going on elsewhere — not even during its idle gap between two
           // questions. That tab keeps #qb-mascot-wrap; this one stays hidden and
@@ -1607,6 +2272,7 @@ try {
     function onTabFocus() {
       try {
         markInteraction();
+        if (!uiEnabled) return;
         if (otherTabIsBusy()) { applyPresence(); return; }
         claimIdle(true);
         applyPresence();
@@ -1708,9 +2374,10 @@ try {
       if (now - lastPetAt < PET_COOLDOWN_MS) return;
       lastPetAt = now;
       markInteraction();
+      recordPet(); // local brain stat: how many pets so far
       try {
         if (currentState === 'idle') {
-          const line = pickFreshLine(PET_LINES);
+          const line = composeCatThought('pet') || pickFreshLine(PET_LINES);
           if (line) setBubble(line, true);
           scheduleQuote();
           return;
@@ -1735,7 +2402,9 @@ try {
       try {
         markInteraction();
         wakeFromNap(null); // a cheer never happens from inside a catnap
-        startOverlay('answering', CHEER_MS, pickFreshLine(HYPE_LINES));
+        // Double-click chat: the local brain composes a fresh hype line.
+        const line = composeCatThought('hype') || pickFreshLine(HYPE_LINES);
+        startOverlay('answering', CHEER_MS, line);
       } catch (error) {
         warnOnce('double-click', error);
       }
@@ -2964,6 +3633,11 @@ try {
       } catch (error) {
         warnOnce('presence-boot', error);
       }
+
+      // Popup switch: the cat (and the busy pill) hide or come back instantly on
+      // every open tab, no reload. The local brain boots its passive sensors.
+      try { watchUiEnabled(); } catch (error) { warnOnce('ui-toggle-boot', error); }
+      try { startBrain(); } catch (error) { warnOnce('brain-boot', error); }
 
       try {
         lastInteractionAt = Date.now();

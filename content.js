@@ -5,6 +5,17 @@ const HARVEST_STOP_WORDS = new Set([
   'introduction', 'principles', 'applications', 'fundamentals',
 ]);
 
+// ── Enable/disable + run generation ──────────────────────────────────────────
+// `_botEnabled` mirrors BOT_ENABLED from storage (the popup switch). `_runToken`
+// is bumped on every start/stop: a cancelled loop can still be parked in a long
+// await (AI request, manual wait), so it compares its own token before it clicks
+// anything. That is what lets Stop → Run work without an F5.
+let _botEnabled = true;
+let _runToken = 0;
+let _activeRunToken = 0;
+let _botEnabledWatched = false;
+
+
 // ── Update banner (GitHub) ───────────────────────────────────────────────────
 // The service worker compares its manifest version with the repo's manifest.json
 // (cached 6 h). When GitHub has something newer, a green "Update vX.Y.Z" badge
@@ -82,13 +93,23 @@ function createHUD() {
   }
   if (_updateInfo) showUpdateBadge(_updateInfo);
   requestUpdateCheck(false);
-  _hudShadow.getElementById('hud-stop-btn').onclick = () => { _stopRequested = true; logHUD('error','Stop'); };
+  _hudShadow.getElementById('hud-stop-btn').onclick = () => { stopLoop('Bot stopped.'); };
   _hudShadow.getElementById('hud-clear-btn').onclick = () => { _hudShadow.getElementById('hud-body').innerHTML = ''; };
   _hudShadow.getElementById('hud-harvest-btn').onclick = () => { requestCourseHarvest(true); harvestCourseReviews(true); };
-  _hudShadow.getElementById('hud-toggle-btn').onclick = () => { _loopActive ? (_stopRequested=true) : startLoop(); };
+  // Run ↔ Stop toggle. Run clears every stale flag first, so it always starts a
+  // fresh scan — clicking Stop and then Run never needs a page refresh.
+  _hudShadow.getElementById('hud-toggle-btn').onclick = () => {
+    if (_loopActive) { stopLoop('Bot stopped.'); return; }
+    _stopRequested = false;
+    _runToken += 1;        // orphan anything still winding down
+    startLoop();
+  };
   let dg = false, sx, sy, ox, oy;
   const hdr = _hudShadow.getElementById('hud-header');
   hdr.onmousedown = (e) => { dg = true; sx = e.clientX; sy = e.clientY; ox = _hudRoot.offsetLeft; oy = _hudRoot.offsetTop; document.onmousemove = (me) => { if (!dg) return; _hudRoot.style.left = (ox+me.clientX-sx)+'px'; _hudRoot.style.top = (oy+me.clientY-sy)+'px'; _hudRoot.style.right='auto'; _hudRoot.style.bottom='auto'; }; document.onmouseup = () => { dg = false; document.onmousemove=null; document.onmouseup=null; }; };
+  // The popup switch may already be off when this tab loads: stay hidden until
+  // BOT_ENABLED flips back on.
+  setHudVisible(_botEnabled);
 }
 
 function logHUD(lvl, txt) {
@@ -97,6 +118,91 @@ function logHUD(lvl, txt) {
   b.appendChild(e); b.scrollTop = b.scrollHeight;
   console.log('[HUD/'+lvl+'] '+txt);
   try { chrome.runtime.sendMessage({action:'log',level:lvl,text:txt}); } catch(ex) {}
+}
+
+/* ── Instant enable/disable (BOT_ENABLED) ──────────────────────────────────── */
+// popup.js writes BOT_ENABLED to chrome.storage.local and mirrors it to .sync
+// (config.js reads .sync). Local wins when present; `!== false` means enabled.
+function readBotEnabled(callback) {
+  const done = (value) => { try { callback(value !== false); } catch (error) { /* caller bug */ } };
+  try {
+    chrome.storage.local.get('BOT_ENABLED', (local) => {
+      if (chrome.runtime.lastError) { done(true); return; }
+      if (local && local.BOT_ENABLED !== undefined) { done(local.BOT_ENABLED); return; }
+      try {
+        chrome.storage.sync.get('BOT_ENABLED', (sync) => {
+          if (chrome.runtime.lastError) { done(true); return; }
+          done(sync ? sync.BOT_ENABLED : undefined);
+        });
+      } catch (error) { done(true); }
+    });
+  } catch (error) { done(true); }
+}
+
+// Promise form for the async paths (startLoop).
+function readBotEnabledAsync() {
+  return new Promise((resolve) => readBotEnabled(resolve));
+}
+
+// display:none takes the whole shadow host off the page instantly; restoring
+// hands the layout back to hud.css (:host is a fixed-position block).
+function setHudVisible(visible) {
+  if (!_hudRoot) return;
+  _hudRoot.style.display = visible ? 'block' : 'none';
+}
+
+// True once the run that called us was cancelled (Stop, a new Run, or Disable).
+function runCancelled() {
+  return _stopRequested || !_botEnabled || _activeRunToken !== _runToken;
+}
+
+// Stop: release the lock immediately and invalidate the in-flight loop. Run then
+// only has to flip `_stopRequested` back and call startLoop() again.
+function stopLoop(reason) {
+  const wasActive = _loopActive || !_stopRequested;
+  _stopRequested = true;
+  _runToken += 1;        // a parked loop can never click after this line
+  _loopActive = false;   // ← without this Run was ignored until an F5
+  if (_hudRoot) _hudRoot.classList.remove('active');
+  setHUDStatus('stopped');
+  if (wasActive) logHUD('error', reason || 'Bot stopped.');
+  return wasActive;
+}
+
+// `initial` is the first read on page load: nothing is running yet, so it must
+// not log a stop into a HUD that never started.
+function applyBotEnabled(enabled, initial) {
+  const next = enabled !== false;
+  const changed = next !== _botEnabled;
+  _botEnabled = next;
+  if (!next) {
+    if (_loopActive) stopLoop('Bot stopped — disabled from the popup.');
+    // `changed` guards against the popup's second write (.sync after .local):
+    // the duplicate event must not overwrite the "stopped" pill with "idle".
+    else if (changed && !initial) { _stopRequested = true; setHUDStatus('idle'); }
+    setHudVisible(false);
+    return;
+  }
+  // Re-enabled: bring the HUD back. The loop itself waits for Run (nothing is
+  // restarted behind the user's back).
+  if (changed) logHUD('info', 'Bot enabled — press Run to continue.');
+  setHudVisible(true);
+}
+
+function watchBotEnabled() {
+  if (_botEnabledWatched) return;
+  _botEnabledWatched = true;
+  try {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      try {
+        if (areaName !== 'local' && areaName !== 'sync') return;
+        if (!changes || !changes.BOT_ENABLED) return;
+        const value = changes.BOT_ENABLED.newValue;
+        applyBotEnabled(value === undefined ? true : value, false);
+      } catch (error) { /* never break the page */ }
+    });
+  } catch (error) { /* storage events unavailable */ }
 }
 
 chrome.runtime.onMessage.addListener((message) => {
@@ -1853,6 +1959,11 @@ async function harvestCourseReviews(force = false) {
     const records = [];
     const seenQuestions = new Set();
     for (let index = 0; index < quizzes.length; index += 1) {
+      // Disabled from the popup mid-run: stop walking the grade report at once.
+      if (!_botEnabled) {
+        logHUD('warn', 'Bot stopped — review harvest cancelled.');
+        break;
+      }
       const quiz = quizzes[index];
       logHUD('info', 'Review harvest [' + (index + 1) + '/' + quizzes.length + ']: ' + quiz.title);
       try {
@@ -2133,6 +2244,7 @@ async function handleQuestion(data) {
       }
       for (let i = 0; i < n; i++) {
         if (legacy.idxs[i] === -1) continue;
+        if (runCancelled()) return false;
         await selectAnswer(elements[i], options[legacy.idxs[i]]);
         logHUD('info', 'Matched row ' + (i + 1) + ': ' + options[legacy.idxs[i]]);
       }
@@ -2164,6 +2276,7 @@ async function handleQuestion(data) {
       );
       const assignments = (batch && batch.assignments) || {};
       for (const row of pending) {
+        if (runCancelled()) return false;
         const answer = assignments[String(row.rowIndex)];
         if (!answer) continue;
         const index = matchingOptionIndex(answer, options, used);
@@ -2192,8 +2305,10 @@ async function handleQuestion(data) {
   if (kind === 'check') {
     const isWrong = await buildWrongOptionFilter(text, options);
     const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
+    if (runCancelled()) return false; // Stop / Run / Disable while we were thinking
     if (localMatches.length) {
       for (const match of localMatches) {
+        if (runCancelled()) return false;
         const element = elements[match.index];
         if (element && !element.checked) element.click();
         logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
@@ -2201,6 +2316,7 @@ async function handleQuestion(data) {
       return true;
     }
     let picks = await askAiMulti(text, options, images);
+    if (runCancelled()) return false;
     picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {
       logHUD('warn','Waiting for manual checkboxes...');
@@ -2209,6 +2325,7 @@ async function handleQuestion(data) {
       return ok;
     }
     for (const p of picks) {
+      if (runCancelled()) return false;
       if (p < elements.length && !elements[p].checked) {
         elements[p].click();
         logHUD('info', 'Ticked '+(p+1));
@@ -2219,6 +2336,7 @@ async function handleQuestion(data) {
 
   if (kind === 'text') {
     const ans = await askAiText(text);
+    if (runCancelled()) return false; // never type into a page after Stop
     if (!ans) {
       logHUD('warn','Waiting for manual text input...');
       const ok = await waitForManual(elements, 'text', text);
@@ -2233,6 +2351,7 @@ async function handleQuestion(data) {
   // Radio / MCQ
   const isWrong = await buildWrongOptionFilter(text, options);
   const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
+  if (runCancelled()) return false;
   if (localMatches.length) {
     const match = localMatches[0];
     if (elements[match.index]) elements[match.index].click();
@@ -2240,6 +2359,7 @@ async function handleQuestion(data) {
     return true;
   }
   let idx = await askAi(text, options, images);
+  if (runCancelled()) return false; // Stop pressed while the AI was thinking
   // Safety net: never click a stored-wrong option even if a provider returns one.
   if (idx !== -1 && isWrong(options[idx])) idx = firstAllowedOption(options, isWrong, idx);
   if (idx === -1) {
@@ -2257,18 +2377,26 @@ async function handleQuestion(data) {
 
 async function startLoop() {
   if (_loopActive) return;
-  await ensureLoaded();
-  await loadConfig();
-  await chrome.storage.sync.get('BOT_ENABLED', async (r) => {
-    if (r.BOT_ENABLED === false) {
+  // Reserve the lock before the first await so two clicks can never start two
+  // loops, then own the run through a generation token.
+  _loopActive = true;
+  _stopRequested = false;
+  const token = ++_runToken;
+  try {
+    await ensureLoaded();
+    await loadConfig();
+    if (!(await readBotEnabledAsync())) {
+      _botEnabled = false;
+      setHudVisible(false);
       logHUD('error', 'Bot disabled in settings');
       return;
     }
-    _loopActive = true;
-    _stopRequested = false;
+    _botEnabled = true;
+    _activeRunToken = token;
     setHUDStatus('running');
     createHUD();
-    logHUD('info', 'Bot started');
+    setHudVisible(true);
+    logHUD('info', 'Bot started.');
     _hudRoot?.classList?.add('active');
 
     const handledQuestions = new Set();
@@ -2279,12 +2407,13 @@ async function startLoop() {
     const startTime = Date.now();
     const maxRun = 8 * 60 * 60 * 1000;
 
-    while (!_stopRequested) {
+    while (!_stopRequested && token === _runToken) {
       if (Date.now() - startTime > maxRun) {
         logHUD('error', '8-hour max runtime reached');
         break;
       }
       await new Promise(r => setTimeout(r, cfg('SCAN_INTERVAL')));
+      if (token !== _runToken) break; // Stop was pressed while we waited
       if (isReviwPg()) {
         const pageId = typeof location === 'undefined' ? 'review' : location.href;
         if (pageId !== reviewPageHandled) {
@@ -2329,6 +2458,7 @@ async function startLoop() {
         handledQuestions.add(sig);
 
         const ok = await handleQuestion(data);
+        if (token !== _runToken) break; // cancelled mid-question: drop the result
         if (!ok && data.kind !== 'select') {
           stalls++;
           if (stalls > 5) {
@@ -2344,35 +2474,44 @@ async function startLoop() {
         logHUD('error', 'Error: '+e.message.slice(0,100));
       }
     }
+  } finally {
+    // Only the newest run may publish the stopped state: a cancelled loop that
+    // was parked in a long await must never clear a fresh run's lock.
+    if (token === _runToken) {
+      _loopActive = false;
+      _stopRequested = true;
+      setHUDStatus('stopped');
+      if (_hudRoot) _hudRoot.classList.remove('active');
+      if (_botEnabled) logHUD('info', 'Bot stopped.');
+    }
+  }
+}
 
-    _loopActive = false;
-    setHUDStatus('stopped');
-    logHUD('info', 'Bot stopped');
-    if (_hudRoot) _hudRoot.classList.remove('active');
+// Auto-start when DOM is ready. BOT_ENABLED is read first: a disabled bot must
+// not auto-harvest or start the loop on any open tab — but review pages still
+// learn themselves (that pass only reads the page and saves verified answers,
+// exactly as before the switch existed).
+let _bootRan = false;
+function bootBot() {
+  if (_bootRan) return;
+  _bootRan = true;
+  createHUD();
+  logHUD('info', 'Moodle Quiz Bot loaded');
+  watchBotEnabled();
+  maybeAutoReviewScan();
+  readBotEnabled((enabled) => {
+    applyBotEnabled(enabled, true);
+    if (!enabled) return;
+    setHudVisible(true);
+    startAutoHarvest();
+    startLoop();
   });
 }
 
-// Auto-start when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  createHUD();
-  logHUD('info', 'Moodle Quiz Bot loaded');
-  startAutoHarvest();
-  // Review pages scan themselves, whether the bot is running or stopped.
-  maybeAutoReviewScan();
-  // Auto-start checked via startLoop which checks BOT_ENABLED
-  chrome.storage.sync.get('BOT_ENABLED', (r) => {
-    if (r.BOT_ENABLED !== false) startLoop();
-  });
-});
+document.addEventListener('DOMContentLoaded', bootBot);
 
-// Also try immediate start
+// Also try immediate start (the document is often already idle when the content
+// script is injected, so DOMContentLoaded has already fired).
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  loadConfig().then(() => {
-    createHUD();
-    startAutoHarvest();
-    maybeAutoReviewScan();
-    chrome.storage.sync.get('BOT_ENABLED', (r) => {
-      if (r.BOT_ENABLED !== false) startLoop();
-    });
-  });
+  loadConfig().then(bootBot);
 }
