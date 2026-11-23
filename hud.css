@@ -282,3 +282,201 @@
 
 /* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */
 :host(.minimized) #hud-root { display: none; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Universal Harvester HUD (universal-harvester.js)
+
+   This block is the *page-level* twin of the Shadow-DOM HUD above: manifest.json
+   injects hud.css into every site, so #qb-hud lives in the normal light DOM and
+   is styled directly. The `:host` rules above only ever match inside the closed
+   shadow root on amaes.com and are harmless here.
+
+   Status chips reuse the Moodle class names (running / stopped / waiting /
+   reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot
+   recognises harvest progress and narrates it with harvesting.gif / review.gif.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+#qb-hud {
+  position: fixed;
+  right: 165px;
+  bottom: 20px;
+  z-index: 2147483646;
+  width: 372px;
+  max-width: calc(100vw - 40px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #e2e8f0;
+  background: linear-gradient(135deg, rgba(30, 42, 71, 0.94) 0%, rgba(15, 52, 96, 0.94) 100%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  pointer-events: auto;
+  transition: width 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;
+}
+
+/* Compact pill on general sites (auto-expanded on study domains). */
+#qb-hud.qb-collapsed {
+  width: auto;
+  min-width: 0;
+  border-radius: 999px;
+}
+#qb-hud.qb-collapsed #qb-hud-body,
+#qb-hud.qb-collapsed #qb-actions {
+  display: none;
+}
+#qb-hud.qb-collapsed #qb-hud-header {
+  border-bottom: none;
+  padding: 8px 10px 8px 14px;
+}
+#qb-hud.qb-collapsed #qb-hud-title {
+  font-size: 12px;
+}
+#qb-hud.qb-collapsed #qb-status {
+  display: none;
+}
+
+#qb-hud-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, rgba(8, 32, 64, 0.92) 0%, rgba(26, 58, 92, 0.72) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#qb-hud-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: #ffb347;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+}
+
+#qb-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(22, 33, 62, 0.9);
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+#qb-status.running { color: #4ade80; }
+#qb-status.stopped { color: #f87171; }
+#qb-status.waiting { color: #fbbf24; }
+#qb-status.reviewing { color: #f5b74f; }
+
+#qb-minimize-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(22, 33, 62, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #cbd5e0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+#qb-minimize-btn:hover { background: #2d3748; color: #ffffff; }
+#qb-minimize-btn:active { transform: scale(0.96); }
+
+#qb-hud-body {
+  padding: 8px 12px;
+  max-height: 190px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #0f3460 rgba(22, 33, 62, 0.4);
+}
+#qb-hud-body::-webkit-scrollbar { width: 4px; }
+#qb-hud-body::-webkit-scrollbar-track { background: rgba(22, 33, 62, 0.4); }
+#qb-hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+
+#qb-log {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 34px;
+}
+
+/* Log rows: same classes as the Moodle HUD (see .hud-log-line below). */
+#qb-log .hud-log-line {
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#qb-hud-hint {
+  padding: 0 12px 8px;
+  font-size: 10.5px;
+  color: #7f8c8d;
+  user-select: none;
+}
+
+#qb-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+#qb-hud .qb-btn {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #ffffff;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+#qb-hud .qb-btn:hover:not(:disabled) { filter: brightness(1.15); }
+#qb-hud .qb-btn:active:not(:disabled) { transform: translateY(1px); }
+#qb-hud .qb-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+#qb-harvest-page { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); }
+#qb-harvest-course { background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); }
+#qb-stop { background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%); flex: 0 0 76px; }
+
+/* Wide/short viewports: keep the pill clear of the gaming/browser edges. */
+@media (max-width: 564px) {
+  #qb-hud {
+    right: 16px;
+    bottom: 168px;
+    width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px);
+  }
+  #qb-hud.qb-collapsed {
+    width: auto;
+    max-width: calc(100vw - 32px);
+  }
+}

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.1.1",
-  "description": "Faithful reimplementation of the Python+Playwright Moodle quiz bot as a Manifest V3 extension.",
+  "version": "3.2.0",
+  "description": "Moodle quiz bot + universal Q&A harvester with a roaming 7-cat mascot on every site.",
   "minimum_chrome_version": "114",
   "permissions": [
     "storage",
@@ -11,17 +11,7 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://*.amaes.com/*",
-    "https://amaes.com/*",
-    "https://amauoed.com/*",
-    "https://openrouter.ai/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://html.duckduckgo.com/*",
-    "https://en.wikipedia.org/*",
-    "http://127.0.0.1:11434/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*",
-    "https://api.freellmapi.com/*"
+    "<all_urls>"
   ],
   "content_scripts": [
     {
@@ -30,12 +20,20 @@
       "js": ["config.js", "storage.js", "providers.js", "content.js", "mascot.js"],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": ["https://*.amaes.com/*"],
+      "css": ["hud.css"],
+      "js": ["config.js", "storage.js", "universal-harvester.js", "mascot.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
       "resources": ["hud.css", "mascot/*"],
-      "matches": ["https://*.amaes.com/*"]
+      "matches": ["<all_urls>"]
     }
   ],
   "background": {
