@@ -17,6 +17,9 @@ const DEFAULTS = Object.freeze({
   GITHUB_BANK_REPO: '',
   GITHUB_BANK_PATH: 'bank.json',
   GITHUB_SYNC_TOKEN: '',
+  // Legacy alias. The options page writes `GITHUB_SYNC_TOKEN`; the sync code
+  // accepts either (the primary key wins) so older saved settings keep working.
+  GITHUB_BANK_TOKEN: '',
 
   // OpenRouter
   OPENROUTER_API_KEY: '',

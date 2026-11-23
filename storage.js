@@ -653,49 +653,191 @@ function similarity(a, b) {
 //  Shared by the service worker (background.js) and the options page
 //  (options.js), both of which include this file.
 //
-//  The metadata endpoint must be requested with the JSON media type
-//  (`application/vnd.github+json`); requesting `...raw+json` returns the file
-//  body instead of the JSON envelope, so `data.sha` is missing and the
-//  subsequent PUT fails with 422 "sha wasn't supplied".
+//  Three GitHub quirks matter here:
+//   1. The metadata endpoint must be requested with the JSON media type
+//      (`application/vnd.github+json`); requesting `...raw+json` returns the
+//      file body instead of the JSON envelope, so `data.sha` is missing and the
+//      subsequent PUT fails with 422 "sha wasn't supplied".
+//   2. Base64 payloads carry UTF-8 bytes. `atob()` yields one char per byte, so
+//      decoding with TextDecoder (and encoding with TextEncoder) keeps `²`,
+//      `₂`, emoji, etc. intact instead of producing mojibake.
+//   3. GET /contents only inlines `content` for files up to 1 MB. Above that
+//      GitHub answers with `"encoding": "none"` and an empty `content`, so the
+//      body has to come from the Git blobs API (up to 100 MB) or `download_url`.
 
-/** Decode a base64 payload (as returned by the Contents API) into a UTF-8 string. */
-function b64ToUtf8(b64) {
-  const binary = atob((b64 || '').replace(/\s/g, ''));
-  const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+const GITHUB_API_ROOT = 'https://api.github.com';
+
+/** Decode a Base64 payload (Contents API / Git blob API) into a UTF-8 string. */
+function decodeBase64Utf8(b64) {
+  const bin = atob(String(b64 || '').replace(/\s+/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder('utf-8').decode(bytes);
 }
 
-/** Encode a UTF-8 string into base64 (btoa alone throws on non-Latin1 input). */
-function utf8ToB64(text) {
-  const bytes = new TextEncoder().encode(text);
+/** Encode a UTF-8 string into Base64 (btoa alone throws on non-Latin1 input). */
+function encodeBase64Utf8(str) {
+  const bytes = new TextEncoder().encode(str == null ? '' : String(str));
+  const CHUNK = 0x8000; // String.fromCharCode.apply() has an argument-count limit
   let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
   return btoa(binary);
 }
 
-/**
- * Read a file from a GitHub repo via the Contents API.
- * Returns { sha, content, missing } where `content` is the parsed JSON object
- * (null when absent or unparsable) and `missing` is true on 404.
- * Throws for other API/network failures.
- */
-async function gitHubGetFile(owner, repo, path, token) {
-  const headers = { 'Accept': 'application/vnd.github+json' };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?t=${Date.now()}`;
-  const resp = await fetch(url, { headers, cache: 'no-store' });
-  if (resp.status === 404) return { sha: null, content: null, missing: true };
-  if (!resp.ok) throw new Error(`GitHub API error: ${resp.status}`);
-  const data = await resp.json();
-  let content = null;
-  if (data && typeof data.content === 'string' && data.content) {
+// Legacy names kept so older call sites keep working.
+function b64ToUtf8(b64) { return decodeBase64Utf8(b64); }
+function utf8ToB64(text) { return encodeBase64Utf8(text); }
+
+/** Common GitHub headers: JSON media type plus the token when one is set. */
+function gitHubHeaders(token, accept) {
+  const headers = { Accept: accept || 'application/vnd.github+json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
+
+/** Pull the human-readable message out of a failed GitHub response body. */
+async function gitHubErrorDetail(resp) {
+  try {
+    const text = (await resp.text()).trim();
+    if (!text) return '';
     try {
-      content = JSON.parse(b64ToUtf8(data.content));
-    } catch (e) {
-      content = null; // Malformed JSON: treat as empty and overwrite.
+      const parsed = JSON.parse(text);
+      const message = parsed && (parsed.message || parsed.error);
+      return String(message || text.slice(0, 300)).trim();
+    } catch (error) {
+      return text.slice(0, 300);
+    }
+  } catch (error) {
+    return '';
+  }
+}
+
+/**
+ * Read the raw text behind a Contents API metadata response.
+ * Inline Base64 is used when GitHub sends it; files over 1 MB (`encoding:
+ * "none"`) are read from the Git blobs API, with `download_url` as a fallback.
+ * Every failure reason is collected so the caller can surface it verbatim.
+ */
+async function gitHubReadFileText(owner, repo, token, meta) {
+  if (meta.contentB64) {
+    return { text: decodeBase64Utf8(meta.contentB64), source: 'contents' };
+  }
+
+  const failures = [];
+
+  if (meta.sha) {
+    try {
+      const blobUrl = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/git/blobs/${encodeURIComponent(meta.sha)}`;
+      const blobResp = await fetch(blobUrl, { headers: gitHubHeaders(token), cache: 'no-store' });
+      if (!blobResp.ok) {
+        const detail = await gitHubErrorDetail(blobResp);
+        failures.push(`Git blob fetch failed: HTTP ${blobResp.status}${detail ? ' — ' + detail : ''}`);
+      } else {
+        const blob = await blobResp.json();
+        if (blob && typeof blob.content === 'string' && blob.content) {
+          return blob.encoding === 'base64'
+            ? { text: decodeBase64Utf8(blob.content), source: 'blob' }
+            : { text: blob.content, source: 'blob' };
+        }
+        failures.push('Git blob response contained no content');
+      }
+    } catch (error) {
+      failures.push(`Git blob fetch failed: ${error.message}`);
     }
   }
-  return { sha: (data && data.sha) || null, content, missing: false };
+
+  if (meta.downloadUrl) {
+    try {
+      // raw.githubusercontent.com serves the file as text; the token is still
+      // required for private repositories.
+      const rawResp = await fetch(meta.downloadUrl, {
+        headers: token ? { Authorization: 'Bearer ' + token } : {},
+        cache: 'no-store',
+      });
+      if (!rawResp.ok) {
+        failures.push(`raw download failed: HTTP ${rawResp.status}`);
+      } else {
+        return { text: await rawResp.text(), source: 'download_url' };
+      }
+    } catch (error) {
+      failures.push(`raw download failed: ${error.message}`);
+    }
+  }
+
+  throw new Error(failures.join('; ') || `GitHub returned no file content for ${meta.sha || 'this file'}`);
+}
+
+/**
+ * Read a JSON file from a GitHub repo via the Contents API.
+ *
+ * Returns { sha, content, missing, parseError, size, source }:
+ *  - `content` is the parsed JSON object (null when absent or unparsable)
+ *  - `parseError` carries the exact JSON.parse/HTTP/decoding failure, never
+ *    masked as "unparsable"
+ *  - `missing` is true on 404 and `source` records where the body came from
+ *    ('contents' | 'blob' | 'download_url' | 'empty' | 'error' | 'missing')
+ *
+ * Throws only when the metadata request itself fails (non-404 HTTP error).
+ */
+async function gitHubGetFile(owner, repo, path, token) {
+  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?t=${Date.now()}`;
+  const resp = await fetch(url, { headers: gitHubHeaders(token), cache: 'no-store' });
+  if (resp.status === 404) {
+    return { sha: null, content: null, missing: true, parseError: '', size: 0, source: 'missing' };
+  }
+  if (!resp.ok) {
+    const detail = await gitHubErrorDetail(resp);
+    const failure = new Error(`GitHub API error: HTTP ${resp.status}${detail ? ' — ' + detail : ''}`);
+    failure.status = resp.status;
+    failure.detail = detail;
+    throw failure;
+  }
+
+  const data = (await resp.json()) || {};
+  const meta = {
+    sha: data.sha || null,
+    size: Number(data.size) || 0,
+    encoding: data.encoding || '',
+    contentB64: typeof data.content === 'string' ? data.content : '',
+    downloadUrl: data.download_url || '',
+  };
+
+  let text = '';
+  let source = 'empty';
+  try {
+    const read = await gitHubReadFileText(owner, repo, token, meta);
+    text = read.text;
+    source = read.source;
+  } catch (error) {
+    return {
+      sha: meta.sha, content: null, missing: false,
+      parseError: error.message, size: meta.size, source: 'error',
+    };
+  }
+
+  if (!text.trim()) {
+    return {
+      sha: meta.sha, content: null, missing: false,
+      parseError: `GitHub returned an empty body (size ${meta.size} bytes, read from ${source})`,
+      size: meta.size, source,
+    };
+  }
+
+  try {
+    return {
+      sha: meta.sha, content: JSON.parse(text), missing: false,
+      parseError: '', size: meta.size, source,
+    };
+  } catch (error) {
+    const preview = text.trim().slice(0, 80).replace(/\s+/g, ' ');
+    return {
+      sha: meta.sha, content: null, missing: false,
+      parseError: `${error.message} (${text.length} chars from ${source}, starts with "${preview}")`,
+      size: meta.size, source,
+    };
+  }
 }
 
 /**
@@ -705,13 +847,11 @@ async function gitHubGetFile(owner, repo, path, token) {
  * sha once and retry. Returns { ok, status, message }.
  */
 async function gitHubPutJson(owner, repo, path, token, data, message, sha) {
-  const headers = {
-    'Accept': 'application/vnd.github+json',
-    'Content-Type': 'application/json',
-  };
-  if (token) headers['Authorization'] = 'Bearer ' + token;
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
-  const content = utf8ToB64(JSON.stringify(data, null, 2));
+  const headers = gitHubHeaders(token);
+  headers['Content-Type'] = 'application/json';
+  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+  // UTF-8 aware: multi-byte characters (², ₂, emoji) survive the round trip.
+  const content = encodeBase64Utf8(JSON.stringify(data, null, 2));
 
   const doPut = (fileSha) => {
     const payload = { message, content };
@@ -732,13 +872,9 @@ async function gitHubPutJson(owner, repo, path, token, data, message, sha) {
   }
 
   if (resp.ok) return { ok: true, status: resp.status, message: '' };
-  let apiMessage = '';
-  try {
-    apiMessage = (await resp.json()).message || '';
-  } catch (e) {
-    // Non-JSON error body; keep the generic message.
-  }
-  return { ok: false, status: resp.status, message: apiMessage };
+  const apiMessage = await gitHubErrorDetail(resp);
+  const hint = resp.status === 413 ? ' (file is too large for the Contents API)' : '';
+  return { ok: false, status: resp.status, message: `${apiMessage}${hint}`.trim() };
 }
 
 function doFlush() {

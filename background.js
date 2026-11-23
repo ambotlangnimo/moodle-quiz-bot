@@ -914,13 +914,22 @@ async function handleMessage(message, sender) {
           return { error: `Network error: ${err.message}` };
         }
 
+        // A bank that exists but could not be read (e.g. GitHub omitted the
+        // inline content for a file over 1 MB and the blob/raw fallback failed,
+        // or the JSON is malformed) must never be treated as empty: pushing in
+        // that state would overwrite the remote questions with the local ones.
+        if (!meta.missing && (!meta.content || typeof meta.content !== 'object' || Array.isArray(meta.content))) {
+          const detail = meta.parseError
+            ? `: ${meta.parseError}`
+            : (meta.content ? ': expected a JSON object at the top level' : '');
+          return { error: `Could not read ${path} from ${owner}/${repo}${detail}` };
+        }
+
         // 2) Pull first: bank.json may be a bare question map or wrapped in
         //    { "questions": { ... }, "updatedAt": "..." }. Unwrap it and merge every
         //    remote question into chrome.storage.local so those answers are usable
-        //    locally before the push below.
-        const remote = meta.content && typeof meta.content === 'object' && !Array.isArray(meta.content)
-          ? meta.content
-          : {};
+        //    locally before the push below. A missing file (404) starts empty.
+        const remote = meta.content || {};
         const pulled = await mergeRemoteBankIntoLocal(remote);
 
         // 3) Merge the remote bank with locally learned (verified) answers.
@@ -1145,7 +1154,9 @@ case 'getAnswerKey': {
       const owner = String(cfg('GITHUB_BANK_OWNER') || '').trim();
       const repo = String(cfg('GITHUB_BANK_REPO') || '').trim();
       const bankPath = String(cfg('GITHUB_BANK_PATH') || 'bank.json').trim() || 'bank.json';
-      const token = String(cfg('GITHUB_SYNC_TOKEN') || '').trim();
+      // `GITHUB_SYNC_TOKEN` is the field written by the options page;
+      // `GITHUB_BANK_TOKEN` is accepted as a legacy alias.
+      const token = String(cfg('GITHUB_SYNC_TOKEN') || cfg('GITHUB_BANK_TOKEN') || '').trim();
       if (!owner || !repo) return { _reqId, status: 'skipped' };
       const result = await syncGitHubBank(owner, repo, bankPath, token);
       return { _reqId, ...result };

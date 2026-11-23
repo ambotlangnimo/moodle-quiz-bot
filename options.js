@@ -63,9 +63,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   for (const key of FIELD_MAP) {
     const el = document.getElementById(key);
     if (!el) continue;
-    const value = key === 'GEMINI_MODEL'
+    let value = key === 'GEMINI_MODEL'
       ? (settings[key] && settings[key] !== 'gemini-2.5-flash' ? settings[key] : 'gemini-3.8-flash')
       : settings[key] !== undefined ? settings[key] : getDefault(key);
+    // Legacy alias: `GITHUB_BANK_TOKEN` predates the `GITHUB_SYNC_TOKEN` field.
+    if (key === 'GITHUB_SYNC_TOKEN' && !value) value = settings.GITHUB_BANK_TOKEN || '';
     if (el.type === 'checkbox') {
       el.checked = value;
     } else {
@@ -139,14 +141,25 @@ async function syncGitHubBank(owner, repo, path, token) {
       return { error: `Network error: ${err.message}` };
     }
     if (meta.missing) return { error: `No question bank found at ${path} in ${owner}/${repo}.` };
-    if (!meta.content) return { error: `Could not parse ${path} as question-bank JSON.` };
+    if (!meta.content || typeof meta.content !== 'object' || Array.isArray(meta.content)) {
+      // Surface the real cause (JSON.parse message, blob/raw HTTP error, empty
+      // file) instead of a generic "Could not parse" — large banks are read
+      // through the Git blobs API, so a failure there must be visible.
+      const detail = meta.parseError
+        ? `: ${meta.parseError}`
+        : (meta.content ? ': expected a JSON object at the top level' : '');
+      return { error: `Could not parse ${path} as question-bank JSON${detail}` };
+    }
 
     // 2) Pull: bank.json is either a bare question map or wrapped in
     //    { "questions": { ... }, "updatedAt": "..." }. mergeRemoteBankIntoLocal()
     //    unwraps the `questions` map, iterates over the question keys and merges
     //    every answer into chrome.storage.local (then flushes the write).
     const pulled = await mergeRemoteBankIntoLocal(meta.content);
-    return { status: 'ok', added: pulled.added, questions: pulled.questions, sha: meta.sha };
+    return {
+      status: 'ok', added: pulled.added, questions: pulled.questions,
+      sha: meta.sha, size: meta.size, source: meta.source,
+    };
   } catch (err) {
     return { error: `Sync failed: ${err.message}` };
   }
@@ -317,6 +330,11 @@ function getDefault(key) {
     AUTO_SUBMIT: true, AUTO_CLICK_NEXT: true, AUTO_REATTEMPT: false, SCAN_INTERVAL: 300,
     ANSWER_KEY_ENABLED: true, WEB_SEARCH_ENABLED: true, SHORT_ANSWER_ENABLED: true,
     MULTI_ENABLED: true, MATCHING_ENABLED: true, VISION_ENABLED: true,
+    // GitHub bank fields must be listed here: an unset key falls through to
+    // getDefault(), and assigning `undefined` to input.value renders the
+    // literal text "undefined" in the options page.
+    GITHUB_BANK_OWNER: '', GITHUB_BANK_REPO: '', GITHUB_BANK_PATH: 'bank.json',
+    GITHUB_SYNC_TOKEN: '', GITHUB_BANK_TOKEN: '',
   };
   return defaults[key];
 }
