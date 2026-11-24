@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle Quiz Bot + 3-Cat Squad
 // @namespace    https://github.com/ambotlangnimo/moodle-quiz-bot
-// @version      3.5.2
+// @version      3.5.3
 // @description  Auto-answers Moodle quizzes, harvests study sites, syncs with GitHub Question Bank, and features a 3-Cat Pixel Squad.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -28,7 +28,7 @@
 (function () {
 'use strict';
 
-const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.5.2","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
+const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.5.3","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
 const QB_TM_HUD_CSS = "/* ─────────────────────────────────────────────────────────────────────────────\n   hud.css — Quiz Bot HUD panel (Shadow-DOM-scoped styles)\n   Never intercepts page clicks except its own buttons.\n\n   Layout: the HUD host sits 165px from the right edge so the standalone\n   roaming mascot (extension/mascot.js, a 130 px pixel-art canvas, parked\n   bottom-right and wandering Shimeji-style) can never cover the Run / Stop /\n   Clear / Harvest buttons. All mascot styling lives in mascot.js — this file\n   only styles the closed-shadow HUD plus the light-DOM harvester HUD below.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n/* The mascot is a 96×96 pixel-art canvas scaled up: keep every sprite pixel a\n   crisp square even if a host page tries to smooth images globally. The rule is\n   a no-op for every other element (mascot.js styles him too). */\n#qb-mascot-wrap canvas {\n  image-rendering: crisp-edges;\n  image-rendering: pixelated;\n}\n\n:host {\n  all: initial;\n  display: block;\n  position: fixed;\n  z-index: 2147483647;\n  bottom: 20px;\n  right: 165px;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  max-height: calc(100vh - 40px);\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e0e0e0;\n  pointer-events: none;\n}\n\n:host(.active) {\n  pointer-events: auto;\n}\n\n/* --- Speech-bubble HUD panel --- */\n#hud-root,\n#qb-hud,\n.qb-panel {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  box-sizing: border-box;\n  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);\n  border: 1px solid #16213e;\n  border-radius: 12px;\n  box-shadow: 0 12px 48px rgba(0,0,0,0.5);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  max-height: calc(100vh - 40px);\n  pointer-events: auto;\n}\n\n/* Narrow viewports: stack the panel above the mascot instead of beside it. */\n@media (max-width: 564px) {\n  :host {\n    right: 20px;\n    bottom: 20px;\n    width: calc(100vw - 40px);\n    max-width: calc(100vw - 40px);\n  }\n  #hud-root,\n  #qb-hud,\n  .qb-panel {\n    right: 0;\n    bottom: 148px;\n    width: 100%;\n    max-width: calc(100vw - 40px);\n    max-height: calc(100vh - 260px);\n  }\n}\n\n:host(.active) #hud-root { pointer-events: auto; }\n\n#hud-header {\n  background: linear-gradient(135deg, #082040 0%, #1a3a5c 100%);\n  padding: 10px 12px;\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: move;\n  user-select: none;\n  flex-shrink: 0;\n  border-bottom: 1px solid #16213e;\n}\n\n#hud-title {\n  flex: 1;\n  font-weight: 600;\n  font-size: 13px;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#hud-status {\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: #16213e;\n  white-space: nowrap;\n}\n\n#hud-status.running { color: #4ade80; }\n#hud-status.stopped { color: #f87171; }\n#hud-status.waiting { color: #fbbf24; }\n#hud-status.reviewing { color: #f5b74f; }\n\n#hud-minimize-btn {\n  width: 28px;\n  height: 28px;\n  background: #16213e;\n  border: 1px solid #4a5568;\n  border-radius: 6px;\n  color: #a0aec0;\n  font-size: 16px;\n  font-weight: bold;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: auto;\n  flex-shrink: 0;\n}\n\n#hud-minimize-btn:hover { background: #2d3748; color: #e2e8f0; }\n\n#hud-minimize-btn.collapsed { background: #3182ce; color: white; }\n\n/* Speech bubble pointing to mascot */\n#hud-bubble {\n  position: relative;\n  margin: 8px 12px;\n  padding: 10px 12px;\n  background: rgba(255,255,255,0.08);\n  backdrop-filter: blur(12px);\n  border-radius: 18px;\n  border: 1px solid rgba(255,255,255,0.15);\n  box-shadow: 0 4px 20px rgba(0,0,0,0.3);\n  pointer-events: auto;\n  max-width: 85%;\n  word-break: break-word;\n}\n\n#hud-bubble::after {\n  content: \"\";\n  position: absolute;\n  bottom: -10px;\n  right: 20px;\n  border-width: 10px 10px 0;\n  border-style: solid;\n  border-color: rgba(255,255,255,0.08) transparent;\n  display: block;\n  width: 0;\n  z-index: 1;\n  pointer-events: none;\n}\n\n/* Latest status line */\n#hud-status-line {\n  font-size: 11px;\n  opacity: 0.7;\n  margin-top: 6px;\n  color: #7f8c8d;\n}\n\n/* Log box */\n#hud-body {\n  padding: 8px 12px;\n  overflow-y: auto;\n  flex: 1;\n  max-height: 220px;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 #16213e;\n}\n\n#hud-body::-webkit-scrollbar { width: 4px; }\n#hud-body::-webkit-scrollbar-track { background: #16213e; }\n#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n.hud-entry {\n  padding: 4px 0;\n  border-bottom: 1px solid rgba(255,255,255,0.08);\n  font-size: 12px;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.hud-entry:last-child { border-bottom: none; }\n\n.hud-entry .q-text {\n  color: #cbd5e0;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-tier {\n  font-size: 10px;\n  background: #0f3460;\n  padding: 1px 6px;\n  border-radius: 6px;\n  color: #60a5fa;\n  white-space: nowrap;\n}\n\n.hud-entry .q-answer {\n  color: #4ade80;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-score {\n  font-size: 10px;\n  color: #7f8c8d;\n}\n\n/* Button row */\n#hud-footer {\n  padding: 8px 12px;\n  display: flex;\n  gap: 6px;\n  flex-shrink: 0;\n  border-top: 1px solid rgba(255,255,255,0.08);\n  background: rgba(0,0,0,0.1);\n}\n\n.hud-btn {\n  pointer-events: auto;\n  border: none;\n  border-radius: 6px;\n  padding: 5px 12px;\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: background 0.15s;\n  flex: 1;\n}\n\n#hud-stop-btn {\n  background: #e53e3e;\n  color: white;\n}\n#hud-stop-btn:hover { background: #c53030; }\n\n#hud-clear-btn {\n  background: #374151;\n  color: #d1d5db;\n}\n#hud-clear-btn:hover { background: #4b5563; }\n\n#hud-harvest-btn {\n  background: #0f766e;\n  color: white;\n}\n#hud-harvest-btn:hover { background: #0d5f59; }\n\n#hud-toggle-btn {\n  background: #3182ce;\n  color: white;\n}\n#hud-toggle-btn:hover { background: #2c5282; }\n#hud-toggle-btn.active { background: #38bdf8; }\n\n/* Log line styles */\n.hud-log-line {\n  font-size: 11px;\n  color: #64748b;\n  padding: 1px 0;\n  border-bottom: 1px solid rgba(22,33,62,0.3);\n}\n\n.hud-log-line.info { color: #94a3b8; }\n.hud-log-line.success { color: #4ade80; }\n.hud-log-line.warn { color: #fbbf24; }\n.hud-log-line.error { color: #f87171; }\n\n/* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */\n:host(.minimized) #hud-root { display: none; }\n\n/* ─────────────────────────────────────────────────────────────────────────────\n   Universal Harvester HUD (universal-harvester.js)\n\n   This block is the *page-level* twin of the Shadow-DOM HUD above: manifest.json\n   injects hud.css into every site, so #qb-hud lives in the normal light DOM and\n   is styled directly. The `:host` rules above only ever match inside the closed\n   shadow root on amaes.com and are harmless here.\n\n   Status chips reuse the Moodle class names (running / stopped / waiting /\n   reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot\n   recognises harvest progress and narrates it with its harvesting / review\n   pixel animations.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n#qb-hud {\n  position: fixed;\n  right: 165px;\n  bottom: 20px;\n  z-index: 2147483646;\n  width: 372px;\n  max-width: calc(100vw - 40px);\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: column;\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e2e8f0;\n  background: linear-gradient(135deg, rgba(30, 42, 71, 0.94) 0%, rgba(15, 52, 96, 0.94) 100%);\n  -webkit-backdrop-filter: blur(16px) saturate(140%);\n  backdrop-filter: blur(16px) saturate(140%);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);\n  overflow: hidden;\n  pointer-events: auto;\n  transition: width 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;\n}\n\n/* Compact pill on general sites (auto-expanded on study domains). */\n#qb-hud.qb-collapsed {\n  width: auto;\n  min-width: 0;\n  border-radius: 999px;\n}\n#qb-hud.qb-collapsed #qb-hud-body,\n#qb-hud.qb-collapsed #qb-actions {\n  display: none;\n}\n#qb-hud.qb-collapsed #qb-hud-header {\n  border-bottom: none;\n  padding: 8px 10px 8px 14px;\n}\n#qb-hud.qb-collapsed #qb-hud-title {\n  font-size: 12px;\n}\n#qb-hud.qb-collapsed #qb-status {\n  display: none;\n}\n\n#qb-hud-header {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 10px 12px;\n  background: linear-gradient(135deg, rgba(8, 32, 64, 0.92) 0%, rgba(26, 58, 92, 0.72) 100%);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  cursor: move;\n  user-select: none;\n  -webkit-user-select: none;\n}\n\n#qb-hud-title {\n  flex: 1;\n  min-width: 0;\n  font-weight: 600;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  letter-spacing: 0.2px;\n}\n\n#qb-status {\n  flex-shrink: 0;\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: rgba(22, 33, 62, 0.9);\n  color: #94a3b8;\n  white-space: nowrap;\n}\n\n#qb-status.running { color: #4ade80; }\n#qb-status.stopped { color: #f87171; }\n#qb-status.waiting { color: #fbbf24; }\n#qb-status.reviewing { color: #f5b74f; }\n\n#qb-minimize-btn {\n  flex-shrink: 0;\n  width: 28px;\n  height: 26px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(22, 33, 62, 0.9);\n  border: 1px solid rgba(255, 255, 255, 0.18);\n  border-radius: 8px;\n  color: #cbd5e0;\n  font-size: 14px;\n  font-weight: 700;\n  line-height: 1;\n  cursor: pointer;\n  padding: 0;\n}\n#qb-minimize-btn:hover { background: #2d3748; color: #ffffff; }\n#qb-minimize-btn:active { transform: scale(0.96); }\n\n#qb-hud-body {\n  padding: 8px 12px;\n  max-height: 190px;\n  overflow-y: auto;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 rgba(22, 33, 62, 0.4);\n}\n#qb-hud-body::-webkit-scrollbar { width: 4px; }\n#qb-hud-body::-webkit-scrollbar-track { background: rgba(22, 33, 62, 0.4); }\n#qb-hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n#qb-log {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-height: 34px;\n}\n\n/* Log rows: same classes as the Moodle HUD (see .hud-log-line below). */\n#qb-log .hud-log-line {\n  font-size: 11px;\n  line-height: 1.45;\n  padding: 2px 0;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n#qb-hud-hint {\n  padding: 0 12px 8px;\n  font-size: 10.5px;\n  color: #7f8c8d;\n  user-select: none;\n}\n\n#qb-actions {\n  display: flex;\n  gap: 6px;\n  padding: 8px 12px;\n  border-top: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(0, 0, 0, 0.16);\n}\n\n#qb-hud .qb-btn {\n  flex: 1;\n  min-width: 0;\n  border: none;\n  border-radius: 8px;\n  padding: 6px 8px;\n  font-family: inherit;\n  font-size: 11.5px;\n  font-weight: 600;\n  line-height: 1.3;\n  color: #ffffff;\n  cursor: pointer;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  transition: filter 0.15s ease, transform 0.1s ease;\n}\n#qb-hud .qb-btn:hover:not(:disabled) { filter: brightness(1.15); }\n#qb-hud .qb-btn:active:not(:disabled) { transform: translateY(1px); }\n#qb-hud .qb-btn:disabled { opacity: 0.45; cursor: not-allowed; }\n\n#qb-harvest-page { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); }\n#qb-harvest-course { background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); }\n#qb-stop { background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%); flex: 0 0 76px; }\n\n/* Wide/short viewports: keep the pill clear of the gaming/browser edges. */\n@media (max-width: 564px) {\n  #qb-hud {\n    right: 16px;\n    bottom: 168px;\n    width: calc(100vw - 32px);\n    max-width: calc(100vw - 32px);\n  }\n  #qb-hud.qb-collapsed {\n    width: auto;\n    max-width: calc(100vw - 32px);\n  }\n}\n";
 const QB_TM_LOCAL_PREFIX = 'qb_tm_local:';
 const QB_TM_SYNC_PREFIX = 'qb_tm_sync:';
@@ -7998,7 +7998,8 @@ try {
    three assignment slots; each working tab claims the specialist for its job
    (exam → Mochi, review → Luna, harvest → Boba) and a second, third tab picks
    one of the remaining free cats, so several tabs work in parallel. Tabs with
-   no cat hide the workers and show a live "🐾 Working: Mochi (Exam) • …" pill.
+   no cat let a focused idle tab claim a free companion, or show a live squad
+   status pill when every available cat is working elsewhere.
    When every job ends the focused tab gets Mochi back, who naps after 35 s of
    stillness and wakes the moment he is clicked or a quiz/harvest starts.
 
@@ -9645,6 +9646,11 @@ try {
       return slot.workLockUntil > 0 && Date.now() < slot.workLockUntil;
     }
 
+    function slotHasWork(slot) {
+      return slotIsWorking(slot)
+        || !!(slot && slot.tabId != null && slot.workLockUntil > 0 && Date.now() < slot.workLockUntil);
+    }
+
     function workingSlots() {
       const list = [];
       SQUAD_SLOTS.forEach((id) => { if (slotIsWorking(squad[id])) list.push(id); });
@@ -9685,16 +9691,44 @@ try {
 
     // "🐾 Working: Mochi (Exam) • Boba (Harvest)" — the live squad pill shown on
     // every tab that has no cat of its own while one or more cats are busy.
-    function squadStatusPill() {
+    function squadStatusPill(companionId) {
       const parts = [];
       SQUAD_SLOTS.forEach((id) => {
         const slot = squad[id];
-        const busy = slotIsWorking(slot) || (slot.tabId != null && slot.workLockUntil > 0 && Date.now() < slot.workLockUntil);
-        if (!busy) return;
+        if (!slotHasWork(slot)) return;
         parts.push((CATS[id] ? CATS[id].name : id) + ' (' + slotTaskLabel(slot) + ')');
       });
+      if (companionId && CATS[companionId]) {
+        parts.push(CATS[companionId].name + ' keeping you company');
+        return '🐾 ' + parts.join(' • ');
+      }
       if (!parts.length) return WORK_PILL_TEXT;
       return '🐾 Working: ' + parts.join(' • ');
+    }
+
+    function fullSquadBusyAcrossTabs() {
+      const tabs = [];
+      for (let i = 0; i < SQUAD_SLOTS.length; i += 1) {
+        const slot = squad[SQUAD_SLOTS[i]];
+        if (!slotHasWork(slot) || slot.tabId == null || slot.tabId === myTabId) return false;
+        if (tabs.indexOf(slot.tabId) !== -1) return false;
+        tabs.push(slot.tabId);
+      }
+      return tabs.length === SQUAD_SLOTS.length;
+    }
+
+    function companionGreeting(companionId, sourceSquad) {
+      const busyId = SQUAD_SLOTS.find((id) => id !== companionId && slotHasWork(sourceSquad[id]));
+      const busyCat = busyId && CATS[busyId] ? CATS[busyId].name : 'Your squad';
+      const slot = busyId ? sourceSquad[busyId] : null;
+      const task = slotTaskLabel(slot);
+      const activity = task === 'Exam' ? 'grinding your exam'
+        : task === 'Harvest' ? 'harvesting answers'
+          : task === 'Review' ? 'reviewing answers' : 'working hard';
+      if (companionId === 'luna') {
+        return busyCat + '\'s ' + activity + ' — I\'ll keep you company here! 🕶️🐾';
+      }
+      return busyCat + '\'s ' + activity + ' — I\'ll keep this tab cozy! 💤🐾';
     }
 
     function writeSquad(next) {
@@ -9949,7 +9983,7 @@ try {
 
     // Rule B: take the idle Mochi onto this (visible) tab. `follow` greets the
     // user only when he came from another tab, so a plain page load stays quiet.
-    function claimIdle(follow) {
+    function claimIdle(follow, allowDuringOtherWork) {
       if (!uiEnabled) return;
       if (!squadEnabled || myTabId == null) return;
       if (!tabVisible()) return;
@@ -9960,7 +9994,7 @@ try {
         return;
       }
       if (myTask && myTask !== 'idle' && holdsSlot) { applyPresence(); return; }
-      if (otherTabIsBusy() || otherTabWorkLocked()) return; // Rule A always wins
+      if (!allowDuringOtherWork && (otherTabIsBusy() || otherTabWorkLocked())) return; // Rule A always wins
       const previousOwner = squad.mochi.tabId;
       if (squad.mochi.tabId === myTabId && squad.mochi.task === 'idle' && slotIsFresh(squad.mochi)) {
         myCatId = 'mochi';
@@ -9972,7 +10006,8 @@ try {
       readSquad((stored) => {
         const next = normalizeSquad(stored);
         const jobsLeft = SQUAD_SLOTS.some((id) => slotIsWorking(next[id]) && next[id].tabId !== myTabId);
-        if (jobsLeft || otherTabWorkLocked()) { squad = next; applyPresence(); return; }
+        if ((jobsLeft || otherTabWorkLocked()) && !allowDuringOtherWork) { squad = next; applyPresence(); return; }
+        if (allowDuringOtherWork && slotHasWork(next.mochi)) { squad = next; applyPresence(); return; }
         // Only one idle mascot follows the user: fold every idle assignment away.
         SQUAD_SLOTS.forEach((id) => {
           if (next[id].task === 'idle' || next[id].tabId == null) {
@@ -9991,6 +10026,66 @@ try {
           if (line) setBubble(line, true);
           scheduleQuote();
         }
+      });
+    }
+
+    function claimCompanion() {
+      if (!uiEnabled || !squadEnabled || myTabId == null || currentState !== 'idle'
+        || _activeWorkUntil > Date.now() || !tabVisible() || !documentHasFocus() || claimInFlight) return;
+      claimInFlight = true;
+      readSquad((stored) => {
+        claimInFlight = false;
+        if (!uiEnabled || currentState !== 'idle' || _activeWorkUntil > Date.now()
+          || !tabVisible() || !documentHasFocus()) return;
+        const next = normalizeSquad(stored || squad);
+        const busyElsewhere = SQUAD_SLOTS.some((id) => {
+          const slot = next[id];
+          return slot.tabId != null && slot.tabId !== myTabId && slotHasWork(slot);
+        });
+        if (!busyElsewhere) { squad = next; applyPresence(); return; }
+
+        const mochi = next.mochi;
+        const mochiIdleElsewhere = mochi.tabId != null && mochi.tabId !== myTabId
+          && mochi.task === 'idle' && slotIsFresh(mochi);
+        if (!slotHasWork(mochi) && !mochiIdleElsewhere) {
+          squad = next;
+          claimIdle(true, true);
+          return;
+        }
+
+        const companionId = ['luna', 'boba'].find((id) => !slotHasWork(next[id]));
+        if (!companionId) { squad = next; applyPresence(); return; }
+        const alreadyOurs = next[companionId].tabId === myTabId
+          && next[companionId].task === 'idle' && slotIsFresh(next[companionId]);
+        const otherIdleIsOurs = SQUAD_SLOTS.some((id) => id !== companionId
+          && next[id].tabId === myTabId && next[id].task === 'idle');
+        if (alreadyOurs && !otherIdleIsOurs) {
+          squad = next;
+          myCatId = companionId;
+          myTask = 'idle';
+          refreshAssignedCat();
+          applyPresence();
+          return;
+        }
+        SQUAD_SLOTS.forEach((id) => {
+          if (id !== companionId && next[id].tabId === myTabId && next[id].task === 'idle') {
+            next[id] = { tabId: null, task: '', url: '', workLockUntil: 0, updatedAt: Date.now() };
+          }
+        });
+        next[companionId] = {
+          tabId: myTabId,
+          task: 'idle',
+          url: pageUrl(),
+          workLockUntil: 0,
+          updatedAt: Date.now(),
+        };
+        squad = next;
+        myCatId = companionId;
+        myTask = 'idle';
+        refreshAssignedCat();
+        writeSquad(next);
+        applyPresence();
+        if (!alreadyOurs) setBubble(companionGreeting(companionId, next), true);
       });
     }
 
@@ -10025,6 +10120,7 @@ try {
       const busyElsewhere = otherTabIsBusy() || otherTabWorkLocked();
       if (busyElsewhere) {
         sawOtherTabWorking = true; // Rule A / A+ still holds at least one cat
+        if (currentState === 'idle' && tabVisible() && documentHasFocus()) claimCompanion();
         return;
       }
       // The other tabs stopped working. Focus decides, so two visible windows can
@@ -10048,12 +10144,20 @@ try {
     // tab": a hand-off published by another tab is claimed by the focused tab.
     // The tab-id tie-break (`myTabId < previousOwner`) keeps it deterministic.
     function maybeFollowIdle(previousOwner) {
-      if (!squadEnabled || myTabId == null) return;
-      if (otherTabIsBusy() || otherTabWorkLocked()) return; // another cat still works
-      if (previousOwner == null || previousOwner === myTabId) return;
-      if (myTabId >= previousOwner) return;                // deterministic winner only
-      if (!tabVisible() || !documentHasFocus()) return;
+      if (!squadEnabled || myTabId == null) return false;
+      if (previousOwner == null || previousOwner === myTabId) return false;
+      if (myTabId >= previousOwner) return false; // deterministic winner only
+      if (!tabVisible() || !documentHasFocus()) return false;
+      const mochi = squad.mochi;
+      const mochiIdleElsewhere = mochi.tabId != null && mochi.tabId !== myTabId
+        && mochi.task === 'idle' && slotIsFresh(mochi);
+      if (!slotHasWork(mochi) && !mochiIdleElsewhere) {
+        claimIdle(true, true);
+        return true;
+      }
+      if (otherTabIsBusy() || otherTabWorkLocked()) return false;
       claimIdle(true); // "Done working! What are we doing on this tab?"
+      return true;
     }
 
     function showCat() {
@@ -10131,7 +10235,18 @@ try {
         myTask = squad[mine].task || 'idle';
         refreshAssignedCat();
         showCat();
-        showPill(false);
+        const idleCompanion = currentState === 'idle' && mine !== 'mochi'
+          && squad[mine].task === 'idle' && _activeWorkUntil <= Date.now();
+        if (busyElsewhere && currentState === 'idle' && !mineWorking) {
+          showPill(true, squadStatusPill(idleCompanion ? mine : null));
+        } else {
+          showPill(false);
+        }
+        return;
+      }
+      if (fullSquadBusyAcrossTabs()) {
+        hideCat();
+        showPill(true, '🐾 Full squad busy working across 3 tabs!');
         return;
       }
       if (busyElsewhere || (mine == null && workingSlots().length)) {
@@ -11181,8 +11296,11 @@ try {
             squadReady = true;
             applyPresence(); // hide + pill, or reveal the cat assigned to this tab
             syncHangoutCats();
-            if (otherTabIsBusy()) return;
-            if (wasBusy) maybeFollowIdle(previousOwner); // idle hand-off → follow it
+            const followed = wasBusy && maybeFollowIdle(previousOwner);
+            if (otherTabIsBusy() || otherTabWorkLocked()) {
+              if (!followed && currentState === 'idle' && tabVisible() && documentHasFocus()) claimCompanion();
+              return;
+            }
           } catch (error) {
             warnOnce('squad-change', error);
           }
@@ -11193,9 +11311,8 @@ try {
       }
     }
 
-    // While this tab works it re-stamps its slot so the other tabs keep honouring
-    // the claim and a crashed tab frees its cat after PRESENCE_STALE_MS. Idle
-    // slots are deliberately left to go stale: focus decides who inherits Mochi.
+    // Work and focused companion slots are re-stamped so other tabs keep honouring
+    // them; inactive idle slots are left to go stale and can be claimed on focus.
     function startPresenceHeartbeat() {
       if (squadHeartbeat) return;
       squadHeartbeat = setInterval(() => {
@@ -11203,7 +11320,16 @@ try {
           if (!squadEnabled || myTabId == null) return;
           const id = myCatId && CATS[myCatId] ? myCatId : null;
           if (!id || !squad[id] || squad[id].tabId !== myTabId) return;
-          if (myTask === 'idle') return;
+          if (myTask === 'idle') {
+            if ((id === 'luna' || id === 'boba') && currentState === 'idle'
+              && tabVisible() && documentHasFocus() && otherTabIsBusy()) {
+              const next = { ...squad };
+              next[id] = { ...next[id], url: pageUrl(), workLockUntil: 0, updatedAt: Date.now() };
+              squad = next;
+              writeSquad(next);
+            }
+            return;
+          }
           const next = { ...squad };
           next[id] = { ...next[id], task: myTask || next[id].task, url: pageUrl(), workLockUntil: _activeWorkUntil, updatedAt: Date.now() };
           squad = next;
@@ -11225,7 +11351,11 @@ try {
           // is still going on elsewhere — not even during its idle gap between two
           // questions. That tab keeps #qb-mascot-wrap; this one stays hidden and
           // shows the busy pill until the run/harvest finishes.
-          if (otherTabIsBusy()) { applyPresence(); return; }
+          if (otherTabIsBusy() || otherTabWorkLocked()) {
+            if (currentState === 'idle' && documentHasFocus()) presenceTick();
+            else applyPresence();
+            return;
+          }
           claimIdle(true);   // Rule B: the idle cat follows the active tab
         }
         applyPresence();
@@ -11241,7 +11371,11 @@ try {
       try {
         markInteraction();
         if (!uiEnabled) return;
-        if (otherTabIsBusy()) { applyPresence(); return; }
+        if (otherTabIsBusy() || otherTabWorkLocked()) {
+          if (currentState === 'idle' && tabVisible()) presenceTick();
+          else applyPresence();
+          return;
+        }
         claimIdle(true);
         applyPresence();
       } catch (error) {

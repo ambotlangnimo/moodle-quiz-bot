@@ -22,7 +22,8 @@
    three assignment slots; each working tab claims the specialist for its job
    (exam → Mochi, review → Luna, harvest → Boba) and a second, third tab picks
    one of the remaining free cats, so several tabs work in parallel. Tabs with
-   no cat hide the workers and show a live "🐾 Working: Mochi (Exam) • …" pill.
+   no cat let a focused idle tab claim a free companion, or show a live squad
+   status pill when every available cat is working elsewhere.
    When every job ends the focused tab gets Mochi back, who naps after 35 s of
    stillness and wakes the moment he is clicked or a quiz/harvest starts.
 
@@ -1669,6 +1670,11 @@ try {
       return slot.workLockUntil > 0 && Date.now() < slot.workLockUntil;
     }
 
+    function slotHasWork(slot) {
+      return slotIsWorking(slot)
+        || !!(slot && slot.tabId != null && slot.workLockUntil > 0 && Date.now() < slot.workLockUntil);
+    }
+
     function workingSlots() {
       const list = [];
       SQUAD_SLOTS.forEach((id) => { if (slotIsWorking(squad[id])) list.push(id); });
@@ -1709,16 +1715,44 @@ try {
 
     // "🐾 Working: Mochi (Exam) • Boba (Harvest)" — the live squad pill shown on
     // every tab that has no cat of its own while one or more cats are busy.
-    function squadStatusPill() {
+    function squadStatusPill(companionId) {
       const parts = [];
       SQUAD_SLOTS.forEach((id) => {
         const slot = squad[id];
-        const busy = slotIsWorking(slot) || (slot.tabId != null && slot.workLockUntil > 0 && Date.now() < slot.workLockUntil);
-        if (!busy) return;
+        if (!slotHasWork(slot)) return;
         parts.push((CATS[id] ? CATS[id].name : id) + ' (' + slotTaskLabel(slot) + ')');
       });
+      if (companionId && CATS[companionId]) {
+        parts.push(CATS[companionId].name + ' keeping you company');
+        return '🐾 ' + parts.join(' • ');
+      }
       if (!parts.length) return WORK_PILL_TEXT;
       return '🐾 Working: ' + parts.join(' • ');
+    }
+
+    function fullSquadBusyAcrossTabs() {
+      const tabs = [];
+      for (let i = 0; i < SQUAD_SLOTS.length; i += 1) {
+        const slot = squad[SQUAD_SLOTS[i]];
+        if (!slotHasWork(slot) || slot.tabId == null || slot.tabId === myTabId) return false;
+        if (tabs.indexOf(slot.tabId) !== -1) return false;
+        tabs.push(slot.tabId);
+      }
+      return tabs.length === SQUAD_SLOTS.length;
+    }
+
+    function companionGreeting(companionId, sourceSquad) {
+      const busyId = SQUAD_SLOTS.find((id) => id !== companionId && slotHasWork(sourceSquad[id]));
+      const busyCat = busyId && CATS[busyId] ? CATS[busyId].name : 'Your squad';
+      const slot = busyId ? sourceSquad[busyId] : null;
+      const task = slotTaskLabel(slot);
+      const activity = task === 'Exam' ? 'grinding your exam'
+        : task === 'Harvest' ? 'harvesting answers'
+          : task === 'Review' ? 'reviewing answers' : 'working hard';
+      if (companionId === 'luna') {
+        return busyCat + '\'s ' + activity + ' — I\'ll keep you company here! 🕶️🐾';
+      }
+      return busyCat + '\'s ' + activity + ' — I\'ll keep this tab cozy! 💤🐾';
     }
 
     function writeSquad(next) {
@@ -1973,7 +2007,7 @@ try {
 
     // Rule B: take the idle Mochi onto this (visible) tab. `follow` greets the
     // user only when he came from another tab, so a plain page load stays quiet.
-    function claimIdle(follow) {
+    function claimIdle(follow, allowDuringOtherWork) {
       if (!uiEnabled) return;
       if (!squadEnabled || myTabId == null) return;
       if (!tabVisible()) return;
@@ -1984,7 +2018,7 @@ try {
         return;
       }
       if (myTask && myTask !== 'idle' && holdsSlot) { applyPresence(); return; }
-      if (otherTabIsBusy() || otherTabWorkLocked()) return; // Rule A always wins
+      if (!allowDuringOtherWork && (otherTabIsBusy() || otherTabWorkLocked())) return; // Rule A always wins
       const previousOwner = squad.mochi.tabId;
       if (squad.mochi.tabId === myTabId && squad.mochi.task === 'idle' && slotIsFresh(squad.mochi)) {
         myCatId = 'mochi';
@@ -1996,7 +2030,8 @@ try {
       readSquad((stored) => {
         const next = normalizeSquad(stored);
         const jobsLeft = SQUAD_SLOTS.some((id) => slotIsWorking(next[id]) && next[id].tabId !== myTabId);
-        if (jobsLeft || otherTabWorkLocked()) { squad = next; applyPresence(); return; }
+        if ((jobsLeft || otherTabWorkLocked()) && !allowDuringOtherWork) { squad = next; applyPresence(); return; }
+        if (allowDuringOtherWork && slotHasWork(next.mochi)) { squad = next; applyPresence(); return; }
         // Only one idle mascot follows the user: fold every idle assignment away.
         SQUAD_SLOTS.forEach((id) => {
           if (next[id].task === 'idle' || next[id].tabId == null) {
@@ -2015,6 +2050,66 @@ try {
           if (line) setBubble(line, true);
           scheduleQuote();
         }
+      });
+    }
+
+    function claimCompanion() {
+      if (!uiEnabled || !squadEnabled || myTabId == null || currentState !== 'idle'
+        || _activeWorkUntil > Date.now() || !tabVisible() || !documentHasFocus() || claimInFlight) return;
+      claimInFlight = true;
+      readSquad((stored) => {
+        claimInFlight = false;
+        if (!uiEnabled || currentState !== 'idle' || _activeWorkUntil > Date.now()
+          || !tabVisible() || !documentHasFocus()) return;
+        const next = normalizeSquad(stored || squad);
+        const busyElsewhere = SQUAD_SLOTS.some((id) => {
+          const slot = next[id];
+          return slot.tabId != null && slot.tabId !== myTabId && slotHasWork(slot);
+        });
+        if (!busyElsewhere) { squad = next; applyPresence(); return; }
+
+        const mochi = next.mochi;
+        const mochiIdleElsewhere = mochi.tabId != null && mochi.tabId !== myTabId
+          && mochi.task === 'idle' && slotIsFresh(mochi);
+        if (!slotHasWork(mochi) && !mochiIdleElsewhere) {
+          squad = next;
+          claimIdle(true, true);
+          return;
+        }
+
+        const companionId = ['luna', 'boba'].find((id) => !slotHasWork(next[id]));
+        if (!companionId) { squad = next; applyPresence(); return; }
+        const alreadyOurs = next[companionId].tabId === myTabId
+          && next[companionId].task === 'idle' && slotIsFresh(next[companionId]);
+        const otherIdleIsOurs = SQUAD_SLOTS.some((id) => id !== companionId
+          && next[id].tabId === myTabId && next[id].task === 'idle');
+        if (alreadyOurs && !otherIdleIsOurs) {
+          squad = next;
+          myCatId = companionId;
+          myTask = 'idle';
+          refreshAssignedCat();
+          applyPresence();
+          return;
+        }
+        SQUAD_SLOTS.forEach((id) => {
+          if (id !== companionId && next[id].tabId === myTabId && next[id].task === 'idle') {
+            next[id] = { tabId: null, task: '', url: '', workLockUntil: 0, updatedAt: Date.now() };
+          }
+        });
+        next[companionId] = {
+          tabId: myTabId,
+          task: 'idle',
+          url: pageUrl(),
+          workLockUntil: 0,
+          updatedAt: Date.now(),
+        };
+        squad = next;
+        myCatId = companionId;
+        myTask = 'idle';
+        refreshAssignedCat();
+        writeSquad(next);
+        applyPresence();
+        if (!alreadyOurs) setBubble(companionGreeting(companionId, next), true);
       });
     }
 
@@ -2049,6 +2144,7 @@ try {
       const busyElsewhere = otherTabIsBusy() || otherTabWorkLocked();
       if (busyElsewhere) {
         sawOtherTabWorking = true; // Rule A / A+ still holds at least one cat
+        if (currentState === 'idle' && tabVisible() && documentHasFocus()) claimCompanion();
         return;
       }
       // The other tabs stopped working. Focus decides, so two visible windows can
@@ -2072,12 +2168,20 @@ try {
     // tab": a hand-off published by another tab is claimed by the focused tab.
     // The tab-id tie-break (`myTabId < previousOwner`) keeps it deterministic.
     function maybeFollowIdle(previousOwner) {
-      if (!squadEnabled || myTabId == null) return;
-      if (otherTabIsBusy() || otherTabWorkLocked()) return; // another cat still works
-      if (previousOwner == null || previousOwner === myTabId) return;
-      if (myTabId >= previousOwner) return;                // deterministic winner only
-      if (!tabVisible() || !documentHasFocus()) return;
+      if (!squadEnabled || myTabId == null) return false;
+      if (previousOwner == null || previousOwner === myTabId) return false;
+      if (myTabId >= previousOwner) return false; // deterministic winner only
+      if (!tabVisible() || !documentHasFocus()) return false;
+      const mochi = squad.mochi;
+      const mochiIdleElsewhere = mochi.tabId != null && mochi.tabId !== myTabId
+        && mochi.task === 'idle' && slotIsFresh(mochi);
+      if (!slotHasWork(mochi) && !mochiIdleElsewhere) {
+        claimIdle(true, true);
+        return true;
+      }
+      if (otherTabIsBusy() || otherTabWorkLocked()) return false;
       claimIdle(true); // "Done working! What are we doing on this tab?"
+      return true;
     }
 
     function showCat() {
@@ -2155,7 +2259,18 @@ try {
         myTask = squad[mine].task || 'idle';
         refreshAssignedCat();
         showCat();
-        showPill(false);
+        const idleCompanion = currentState === 'idle' && mine !== 'mochi'
+          && squad[mine].task === 'idle' && _activeWorkUntil <= Date.now();
+        if (busyElsewhere && currentState === 'idle' && !mineWorking) {
+          showPill(true, squadStatusPill(idleCompanion ? mine : null));
+        } else {
+          showPill(false);
+        }
+        return;
+      }
+      if (fullSquadBusyAcrossTabs()) {
+        hideCat();
+        showPill(true, '🐾 Full squad busy working across 3 tabs!');
         return;
       }
       if (busyElsewhere || (mine == null && workingSlots().length)) {
@@ -3205,8 +3320,11 @@ try {
             squadReady = true;
             applyPresence(); // hide + pill, or reveal the cat assigned to this tab
             syncHangoutCats();
-            if (otherTabIsBusy()) return;
-            if (wasBusy) maybeFollowIdle(previousOwner); // idle hand-off → follow it
+            const followed = wasBusy && maybeFollowIdle(previousOwner);
+            if (otherTabIsBusy() || otherTabWorkLocked()) {
+              if (!followed && currentState === 'idle' && tabVisible() && documentHasFocus()) claimCompanion();
+              return;
+            }
           } catch (error) {
             warnOnce('squad-change', error);
           }
@@ -3217,9 +3335,8 @@ try {
       }
     }
 
-    // While this tab works it re-stamps its slot so the other tabs keep honouring
-    // the claim and a crashed tab frees its cat after PRESENCE_STALE_MS. Idle
-    // slots are deliberately left to go stale: focus decides who inherits Mochi.
+    // Work and focused companion slots are re-stamped so other tabs keep honouring
+    // them; inactive idle slots are left to go stale and can be claimed on focus.
     function startPresenceHeartbeat() {
       if (squadHeartbeat) return;
       squadHeartbeat = setInterval(() => {
@@ -3227,7 +3344,16 @@ try {
           if (!squadEnabled || myTabId == null) return;
           const id = myCatId && CATS[myCatId] ? myCatId : null;
           if (!id || !squad[id] || squad[id].tabId !== myTabId) return;
-          if (myTask === 'idle') return;
+          if (myTask === 'idle') {
+            if ((id === 'luna' || id === 'boba') && currentState === 'idle'
+              && tabVisible() && documentHasFocus() && otherTabIsBusy()) {
+              const next = { ...squad };
+              next[id] = { ...next[id], url: pageUrl(), workLockUntil: 0, updatedAt: Date.now() };
+              squad = next;
+              writeSquad(next);
+            }
+            return;
+          }
           const next = { ...squad };
           next[id] = { ...next[id], task: myTask || next[id].task, url: pageUrl(), workLockUntil: _activeWorkUntil, updatedAt: Date.now() };
           squad = next;
@@ -3249,7 +3375,11 @@ try {
           // is still going on elsewhere — not even during its idle gap between two
           // questions. That tab keeps #qb-mascot-wrap; this one stays hidden and
           // shows the busy pill until the run/harvest finishes.
-          if (otherTabIsBusy()) { applyPresence(); return; }
+          if (otherTabIsBusy() || otherTabWorkLocked()) {
+            if (currentState === 'idle' && documentHasFocus()) presenceTick();
+            else applyPresence();
+            return;
+          }
           claimIdle(true);   // Rule B: the idle cat follows the active tab
         }
         applyPresence();
@@ -3265,7 +3395,11 @@ try {
       try {
         markInteraction();
         if (!uiEnabled) return;
-        if (otherTabIsBusy()) { applyPresence(); return; }
+        if (otherTabIsBusy() || otherTabWorkLocked()) {
+          if (currentState === 'idle' && tabVisible()) presenceTick();
+          else applyPresence();
+          return;
+        }
         claimIdle(true);
         applyPresence();
       } catch (error) {
