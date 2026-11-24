@@ -27,9 +27,8 @@
    stillness and wakes the moment he is clicked or a quiz/harvest starts.
 
    SUMMON SQUAD ("Squad hangout" below): while idle, triple-click the cat (or
-   click the little "Squad (1/3)" hover badge) to spawn all three pixel cats on
-   this tab. They trot along the bottom edge and trade personality lines until
-   a task starts, the cat hides, or the hangout is toggled off.
+   click its hover badge) to gather cats that are free on other tabs. Busy cats
+   stay with their work, and the badge count follows the live roster.
 
    States (all drawn by the pixel engine):
      idle       roams the bottom/side edges every 5–7 s (tail wag, blink, ear
@@ -1685,6 +1684,12 @@ try {
       });
     }
 
+    function isCatBusyOnOtherTab(catId) {
+      const slot = squad[catId];
+      if (!slot || slot.tabId == null || slot.tabId === myTabId) return false;
+      return slotIsWorking(slot) || (slot.workLockUntil > 0 && Date.now() < slot.workLockUntil);
+    }
+
     // True while another tab must keep its cat: a fresh working claim (Rule A) or
     // a live work lock (Rule A+). The owner never blocks itself.
     function otherTabIsBusy() {
@@ -2038,6 +2043,7 @@ try {
       if (!uiEnabled) return;
       if (!squadReady) return;
       applyPresence();
+      if (hangout.active) syncHangoutCats();
       if (!squadEnabled) return;
       const busyElsewhere = otherTabIsBusy() || otherTabWorkLocked();
       if (busyElsewhere) {
@@ -2102,9 +2108,9 @@ try {
       pillEl.classList.toggle(PILL_CLASS, !!show && visible);
     }
 
-    // Single source of truth for "which cat is painted here?". A working cat on
-    // this tab always shows; otherwise, while any cat works elsewhere, every
-    // other tab stays hidden and narrates the squad in the status pill.
+    // Single source of truth for "which cat is painted here?". A fresh idle
+    // owner can keep its cosmetic cat visible while a different squad member
+    // works elsewhere, allowing a hangout to show only the remaining free cats.
     function applyPresence() {
       if (!wrapEl) return;
       // Disabled in the popup: nothing of the mascot exists on this tab at all.
@@ -2127,7 +2133,8 @@ try {
         refreshAssignedCat();
       }
 
-      // A cat assigned to this tab: working, or idle while no job runs anywhere.
+      // A cat assigned to this tab: working or the fresh idle owner. The idle
+      // owner may stay visible while another cat works on a different tab.
       let mine = null;
       SQUAD_SLOTS.forEach((id) => {
         if (mine) return;
@@ -2141,7 +2148,8 @@ try {
         return slot.tabId != null && slot.tabId !== myTabId && slotIsWorking(slot);
       }) || otherTabWorkLocked();
 
-      if (mine && (mineWorking || !busyElsewhere)) {
+      if (mine && (mineWorking ||
+          (squad[mine].task === 'idle' && slotIsFresh(squad[mine])))) {
         myCatId = mine;
         myTask = squad[mine].task || 'idle';
         refreshAssignedCat();
@@ -2268,6 +2276,8 @@ try {
 
     const hangout = {
       active: false,
+      starting: false,
+      requestId: 0,
       cats: [],
       lineTimer: null,
       taps: [],
@@ -2303,20 +2313,22 @@ try {
 
     function refreshSquadBadge() {
       if (!squadBadgeEl) return;
-      const count = hangout.active ? 3 : 1;
+      const count = hangout.active
+        ? 1 + SQUAD_SLOTS.filter((id) => id !== assignedCatId && !isCatBusyOnOtherTab(id)).length
+        : 1;
       const label = 'Squad (' + count + '/3)';
       if (squadBadgeEl.textContent !== label) squadBadgeEl.textContent = label;
       squadBadgeEl.title = hangout.active
-        ? 'Send Mochi, Luna & Boba home (triple-click the cat also toggles)'
+        ? 'Send the free cats home (triple-click the cat also toggles)'
         : 'Summon Squad — hang out with Mochi, Luna & Boba';
       const allowed = uiEnabled && booted && currentState === 'idle' && !napping
-        && catShown() && !otherTabIsBusy();
+        && catShown();
       squadBadgeEl.classList.toggle(SQUAD_BADGE_HIDDEN, !allowed);
     }
 
     function canHangout() {
       return booted && uiEnabled && currentState === 'idle' && !napping
-        && catShown() && !otherTabIsBusy();
+        && catShown();
     }
 
     // Triple-click detector: three taps inside SQUAD_TAP_MS toggle the hangout.
@@ -2413,29 +2425,62 @@ try {
       };
     }
 
-    function startSquadHangout() {
-      if (hangout.active || !canHangout()) return;
-      hangout.active = true;
-      // A triple-click also fires dblclick; drop any cheer overlay it started.
-      if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
-      overlayState = '';
-      if (catEl) {
-        catEl.classList.remove('qb-hop', 'qb-review');
-        applyAsset(renderState());
-      } else {
-        paintPrimary();
-      }
-      const extras = SQUAD_SLOTS.filter((id) => id !== assignedCatId);
-      extras.forEach((id, index) => {
-        try { hangout.cats.push(spawnHangoutCat(id, index, extras.length)); } catch (error) { warnOnce('squad-spawn', error); }
+    function syncHangoutCats() {
+      if (!hangout.active) return;
+      const wanted = SQUAD_SLOTS.filter((id) => id !== assignedCatId && !isCatBusyOnOtherTab(id));
+      const wantedSet = new Set(wanted);
+      hangout.cats = hangout.cats.filter((cat) => {
+        if (wantedSet.has(cat.id)) return true;
+        if (cat.bubbleTimer) clearTimeout(cat.bubbleTimer);
+        try {
+          if (cat.wrap && cat.wrap.parentNode) cat.wrap.parentNode.removeChild(cat.wrap);
+        } catch (error) { /* already detached */ }
+        return false;
       });
-      const line = pickCatLine(assignedCatId, 'hang') || pickFreshLine(HANG_LINES);
-      if (line) setBubble(line, true);
-      scheduleHangoutLine(900);
+      const existing = new Set(hangout.cats.map((cat) => cat.id));
+      wanted.forEach((id) => {
+        if (existing.has(id)) return;
+        try {
+          hangout.cats.push(spawnHangoutCat(id, hangout.cats.length, wanted.length));
+        } catch (error) {
+          warnOnce('squad-spawn', error);
+        }
+      });
       refreshSquadBadge();
     }
 
+    function startSquadHangout() {
+      if (hangout.active || hangout.starting || !canHangout()) return;
+      hangout.starting = true;
+      const requestId = ++hangout.requestId;
+      readSquad((stored) => {
+        if (requestId !== hangout.requestId) return;
+        hangout.starting = false;
+        squad = normalizeSquad(stored);
+        if (!canHangout()) { refreshSquadBadge(); return; }
+        hangout.active = true;
+        // A triple-click also fires dblclick; drop any cheer overlay it started.
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        overlayState = '';
+        if (catEl) {
+          catEl.classList.remove('qb-hop', 'qb-review');
+          applyAsset(renderState());
+        } else {
+          paintPrimary();
+        }
+        syncHangoutCats();
+        const line = pickCatLine(assignedCatId, 'hang') || pickFreshLine(HANG_LINES);
+        if (line) setBubble(line, true);
+        scheduleHangoutLine(900);
+        refreshSquadBadge();
+      });
+    }
+
     function stopSquadHangout() {
+      if (hangout.starting) {
+        hangout.starting = false;
+        hangout.requestId += 1;
+      }
       if (!hangout.active) return;
       hangout.active = false;
       if (hangout.lineTimer) { clearTimeout(hangout.lineTimer); hangout.lineTimer = null; }
@@ -3160,10 +3205,8 @@ try {
             squad = normalizeSquad(changes[SQUAD_KEY].newValue);
             squadReady = true;
             applyPresence(); // hide + pill, or reveal the cat assigned to this tab
-            if (otherTabIsBusy()) {
-              if (hangout.active) stopSquadHangout();
-              return;
-            }
+            syncHangoutCats();
+            if (otherTabIsBusy()) return;
             if (wasBusy) maybeFollowIdle(previousOwner); // idle hand-off → follow it
           } catch (error) {
             warnOnce('squad-change', error);
@@ -3250,12 +3293,37 @@ try {
           squadReady = true;
           startPresenceHeartbeat();
           if (!squadEnabled) { applyPresence(); return; }
-          // Boot may land mid-review (score page): honour that working state
-          // instead of quietly claiming an idle cat. Otherwise appear quietly,
-          // no greeting on a plain page load.
-          if (BUSY_LABELS[currentState]) claimBusy(currentState);
-          else claimIdle(false);
-          applyPresence();
+          readBotEnabled((enabled) => {
+            if (enabled && location.pathname.includes('/mod/quiz/attempt.php')) {
+              _activeWorkUntil = Date.now() + 25000;
+              const ownedCat = SQUAD_SLOTS.find((id) => squad[id].tabId === myTabId);
+              if (ownedCat) {
+                myCatId = ownedCat;
+                myTask = 'exam';
+                updateSquad((next) => {
+                  const slot = next[ownedCat];
+                  if (slot.tabId !== myTabId) return;
+                  next[ownedCat] = {
+                    ...slot,
+                    task: 'exam',
+                    url: pageUrl(),
+                    workLockUntil: _activeWorkUntil,
+                    updatedAt: Date.now(),
+                  };
+                });
+                applyPresence();
+                return;
+              }
+              claimSquad('exam');
+              return;
+            }
+            // Boot may land mid-review (score page): honour that working state
+            // instead of quietly claiming an idle cat. Otherwise appear quietly,
+            // no greeting on a plain page load.
+            if (BUSY_LABELS[currentState]) claimBusy(currentState);
+            else claimIdle(false);
+            applyPresence();
+          });
         });
       });
     }

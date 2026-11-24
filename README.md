@@ -1,7 +1,8 @@
 # Moodle Quiz Bot — Browser Extension (Manifest V3)
 
 Faithful reimplementation of the Python + Playwright bot as a
-Chrome/Brave browser extension. No bundler, no build step, no CDN scripts.
+Chrome/Brave browser extension. The extension needs no build step or CDN scripts;
+an optional build script creates a standalone Tampermonkey userscript.
 
 ## Install
 
@@ -10,6 +11,15 @@ Chrome/Brave browser extension. No bundler, no build step, no CDN scripts.
 3. Click **Load unpacked**
 4. Select the `extension/` directory inside this project
 5. The extension icon appears in the toolbar
+
+## Tampermonkey Userscript
+
+Run `node build-userscript.js` from the project directory to generate
+`moodle-quiz-bot.user.js`, then install that file in Tampermonkey. Its metadata
+points updates and downloads at the repository's `main` branch; publish the
+generated file there whenever the manifest version changes. Use the in-page
+settings gear or Tampermonkey menu command to configure API keys and GitHub
+question-bank sync.
 
 ## Configure
 
