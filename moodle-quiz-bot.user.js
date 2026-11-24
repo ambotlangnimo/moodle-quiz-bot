@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle Quiz Bot + 3-Cat Squad
 // @namespace    https://github.com/ambotlangnimo/moodle-quiz-bot
-// @version      3.5.3
+// @version      3.6.0
 // @description  Auto-answers Moodle quizzes, harvests study sites, syncs with GitHub Question Bank, and features a 3-Cat Pixel Squad.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -28,7 +28,7 @@
 (function () {
 'use strict';
 
-const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.5.3","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
+const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.6.0","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
 const QB_TM_HUD_CSS = "/* ─────────────────────────────────────────────────────────────────────────────\n   hud.css — Quiz Bot HUD panel (Shadow-DOM-scoped styles)\n   Never intercepts page clicks except its own buttons.\n\n   Layout: the HUD host sits 165px from the right edge so the standalone\n   roaming mascot (extension/mascot.js, a 130 px pixel-art canvas, parked\n   bottom-right and wandering Shimeji-style) can never cover the Run / Stop /\n   Clear / Harvest buttons. All mascot styling lives in mascot.js — this file\n   only styles the closed-shadow HUD plus the light-DOM harvester HUD below.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n/* The mascot is a 96×96 pixel-art canvas scaled up: keep every sprite pixel a\n   crisp square even if a host page tries to smooth images globally. The rule is\n   a no-op for every other element (mascot.js styles him too). */\n#qb-mascot-wrap canvas {\n  image-rendering: crisp-edges;\n  image-rendering: pixelated;\n}\n\n:host {\n  all: initial;\n  display: block;\n  position: fixed;\n  z-index: 2147483647;\n  bottom: 20px;\n  right: 165px;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  max-height: calc(100vh - 40px);\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e0e0e0;\n  pointer-events: none;\n}\n\n:host(.active) {\n  pointer-events: auto;\n}\n\n/* --- Speech-bubble HUD panel --- */\n#hud-root,\n#qb-hud,\n.qb-panel {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  box-sizing: border-box;\n  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);\n  border: 1px solid #16213e;\n  border-radius: 12px;\n  box-shadow: 0 12px 48px rgba(0,0,0,0.5);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  max-height: calc(100vh - 40px);\n  pointer-events: auto;\n}\n\n/* Narrow viewports: stack the panel above the mascot instead of beside it. */\n@media (max-width: 564px) {\n  :host {\n    right: 20px;\n    bottom: 20px;\n    width: calc(100vw - 40px);\n    max-width: calc(100vw - 40px);\n  }\n  #hud-root,\n  #qb-hud,\n  .qb-panel {\n    right: 0;\n    bottom: 148px;\n    width: 100%;\n    max-width: calc(100vw - 40px);\n    max-height: calc(100vh - 260px);\n  }\n}\n\n:host(.active) #hud-root { pointer-events: auto; }\n\n#hud-header {\n  background: linear-gradient(135deg, #082040 0%, #1a3a5c 100%);\n  padding: 10px 12px;\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: move;\n  user-select: none;\n  flex-shrink: 0;\n  border-bottom: 1px solid #16213e;\n}\n\n#hud-title {\n  flex: 1;\n  font-weight: 600;\n  font-size: 13px;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#hud-status {\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: #16213e;\n  white-space: nowrap;\n}\n\n#hud-status.running { color: #4ade80; }\n#hud-status.stopped { color: #f87171; }\n#hud-status.waiting { color: #fbbf24; }\n#hud-status.reviewing { color: #f5b74f; }\n\n#hud-minimize-btn {\n  width: 28px;\n  height: 28px;\n  background: #16213e;\n  border: 1px solid #4a5568;\n  border-radius: 6px;\n  color: #a0aec0;\n  font-size: 16px;\n  font-weight: bold;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: auto;\n  flex-shrink: 0;\n}\n\n#hud-minimize-btn:hover { background: #2d3748; color: #e2e8f0; }\n\n#hud-minimize-btn.collapsed { background: #3182ce; color: white; }\n\n/* Speech bubble pointing to mascot */\n#hud-bubble {\n  position: relative;\n  margin: 8px 12px;\n  padding: 10px 12px;\n  background: rgba(255,255,255,0.08);\n  backdrop-filter: blur(12px);\n  border-radius: 18px;\n  border: 1px solid rgba(255,255,255,0.15);\n  box-shadow: 0 4px 20px rgba(0,0,0,0.3);\n  pointer-events: auto;\n  max-width: 85%;\n  word-break: break-word;\n}\n\n#hud-bubble::after {\n  content: \"\";\n  position: absolute;\n  bottom: -10px;\n  right: 20px;\n  border-width: 10px 10px 0;\n  border-style: solid;\n  border-color: rgba(255,255,255,0.08) transparent;\n  display: block;\n  width: 0;\n  z-index: 1;\n  pointer-events: none;\n}\n\n/* Latest status line */\n#hud-status-line {\n  font-size: 11px;\n  opacity: 0.7;\n  margin-top: 6px;\n  color: #7f8c8d;\n}\n\n/* Log box */\n#hud-body {\n  padding: 8px 12px;\n  overflow-y: auto;\n  flex: 1;\n  max-height: 220px;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 #16213e;\n}\n\n#hud-body::-webkit-scrollbar { width: 4px; }\n#hud-body::-webkit-scrollbar-track { background: #16213e; }\n#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n.hud-entry {\n  padding: 4px 0;\n  border-bottom: 1px solid rgba(255,255,255,0.08);\n  font-size: 12px;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.hud-entry:last-child { border-bottom: none; }\n\n.hud-entry .q-text {\n  color: #cbd5e0;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-tier {\n  font-size: 10px;\n  background: #0f3460;\n  padding: 1px 6px;\n  border-radius: 6px;\n  color: #60a5fa;\n  white-space: nowrap;\n}\n\n.hud-entry .q-answer {\n  color: #4ade80;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-score {\n  font-size: 10px;\n  color: #7f8c8d;\n}\n\n/* Button row */\n#hud-footer {\n  padding: 8px 12px;\n  display: flex;\n  gap: 6px;\n  flex-shrink: 0;\n  border-top: 1px solid rgba(255,255,255,0.08);\n  background: rgba(0,0,0,0.1);\n}\n\n.hud-btn {\n  pointer-events: auto;\n  border: none;\n  border-radius: 6px;\n  padding: 5px 12px;\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: background 0.15s;\n  flex: 1;\n}\n\n#hud-stop-btn {\n  background: #e53e3e;\n  color: white;\n}\n#hud-stop-btn:hover { background: #c53030; }\n\n#hud-clear-btn {\n  background: #374151;\n  color: #d1d5db;\n}\n#hud-clear-btn:hover { background: #4b5563; }\n\n#hud-harvest-btn {\n  background: #0f766e;\n  color: white;\n}\n#hud-harvest-btn:hover { background: #0d5f59; }\n\n#hud-toggle-btn {\n  background: #3182ce;\n  color: white;\n}\n#hud-toggle-btn:hover { background: #2c5282; }\n#hud-toggle-btn.active { background: #38bdf8; }\n\n/* Log line styles */\n.hud-log-line {\n  font-size: 11px;\n  color: #64748b;\n  padding: 1px 0;\n  border-bottom: 1px solid rgba(22,33,62,0.3);\n}\n\n.hud-log-line.info { color: #94a3b8; }\n.hud-log-line.success { color: #4ade80; }\n.hud-log-line.warn { color: #fbbf24; }\n.hud-log-line.error { color: #f87171; }\n\n/* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */\n:host(.minimized) #hud-root { display: none; }\n\n/* ─────────────────────────────────────────────────────────────────────────────\n   Universal Harvester HUD (universal-harvester.js)\n\n   This block is the *page-level* twin of the Shadow-DOM HUD above: manifest.json\n   injects hud.css into every site, so #qb-hud lives in the normal light DOM and\n   is styled directly. The `:host` rules above only ever match inside the closed\n   shadow root on amaes.com and are harmless here.\n\n   Status chips reuse the Moodle class names (running / stopped / waiting /\n   reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot\n   recognises harvest progress and narrates it with its harvesting / review\n   pixel animations.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n#qb-hud {\n  position: fixed;\n  right: 165px;\n  bottom: 20px;\n  z-index: 2147483646;\n  width: 372px;\n  max-width: calc(100vw - 40px);\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: column;\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e2e8f0;\n  background: linear-gradient(135deg, rgba(30, 42, 71, 0.94) 0%, rgba(15, 52, 96, 0.94) 100%);\n  -webkit-backdrop-filter: blur(16px) saturate(140%);\n  backdrop-filter: blur(16px) saturate(140%);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);\n  overflow: hidden;\n  pointer-events: auto;\n  transition: width 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;\n}\n\n/* Compact pill on general sites (auto-expanded on study domains). */\n#qb-hud.qb-collapsed {\n  width: auto;\n  min-width: 0;\n  border-radius: 999px;\n}\n#qb-hud.qb-collapsed #qb-hud-body,\n#qb-hud.qb-collapsed #qb-actions {\n  display: none;\n}\n#qb-hud.qb-collapsed #qb-hud-header {\n  border-bottom: none;\n  padding: 8px 10px 8px 14px;\n}\n#qb-hud.qb-collapsed #qb-hud-title {\n  font-size: 12px;\n}\n#qb-hud.qb-collapsed #qb-status {\n  display: none;\n}\n\n#qb-hud-header {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 10px 12px;\n  background: linear-gradient(135deg, rgba(8, 32, 64, 0.92) 0%, rgba(26, 58, 92, 0.72) 100%);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  cursor: move;\n  user-select: none;\n  -webkit-user-select: none;\n}\n\n#qb-hud-title {\n  flex: 1;\n  min-width: 0;\n  font-weight: 600;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  letter-spacing: 0.2px;\n}\n\n#qb-status {\n  flex-shrink: 0;\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: rgba(22, 33, 62, 0.9);\n  color: #94a3b8;\n  white-space: nowrap;\n}\n\n#qb-status.running { color: #4ade80; }\n#qb-status.stopped { color: #f87171; }\n#qb-status.waiting { color: #fbbf24; }\n#qb-status.reviewing { color: #f5b74f; }\n\n#qb-minimize-btn {\n  flex-shrink: 0;\n  width: 28px;\n  height: 26px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(22, 33, 62, 0.9);\n  border: 1px solid rgba(255, 255, 255, 0.18);\n  border-radius: 8px;\n  color: #cbd5e0;\n  font-size: 14px;\n  font-weight: 700;\n  line-height: 1;\n  cursor: pointer;\n  padding: 0;\n}\n#qb-minimize-btn:hover { background: #2d3748; color: #ffffff; }\n#qb-minimize-btn:active { transform: scale(0.96); }\n\n#qb-hud-body {\n  padding: 8px 12px;\n  max-height: 190px;\n  overflow-y: auto;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 rgba(22, 33, 62, 0.4);\n}\n#qb-hud-body::-webkit-scrollbar { width: 4px; }\n#qb-hud-body::-webkit-scrollbar-track { background: rgba(22, 33, 62, 0.4); }\n#qb-hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n#qb-log {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-height: 34px;\n}\n\n/* Log rows: same classes as the Moodle HUD (see .hud-log-line below). */\n#qb-log .hud-log-line {\n  font-size: 11px;\n  line-height: 1.45;\n  padding: 2px 0;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n#qb-hud-hint {\n  padding: 0 12px 8px;\n  font-size: 10.5px;\n  color: #7f8c8d;\n  user-select: none;\n}\n\n#qb-actions {\n  display: flex;\n  gap: 6px;\n  padding: 8px 12px;\n  border-top: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(0, 0, 0, 0.16);\n}\n\n#qb-hud .qb-btn {\n  flex: 1;\n  min-width: 0;\n  border: none;\n  border-radius: 8px;\n  padding: 6px 8px;\n  font-family: inherit;\n  font-size: 11.5px;\n  font-weight: 600;\n  line-height: 1.3;\n  color: #ffffff;\n  cursor: pointer;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  transition: filter 0.15s ease, transform 0.1s ease;\n}\n#qb-hud .qb-btn:hover:not(:disabled) { filter: brightness(1.15); }\n#qb-hud .qb-btn:active:not(:disabled) { transform: translateY(1px); }\n#qb-hud .qb-btn:disabled { opacity: 0.45; cursor: not-allowed; }\n\n#qb-harvest-page { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); }\n#qb-harvest-course { background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); }\n#qb-stop { background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%); flex: 0 0 76px; }\n\n/* Wide/short viewports: keep the pill clear of the gaming/browser edges. */\n@media (max-width: 564px) {\n  #qb-hud {\n    right: 16px;\n    bottom: 168px;\n    width: calc(100vw - 32px);\n    max-width: calc(100vw - 32px);\n  }\n  #qb-hud.qb-collapsed {\n    width: auto;\n    max-width: calc(100vw - 32px);\n  }\n}\n";
 const QB_TM_LOCAL_PREFIX = 'qb_tm_local:';
 const QB_TM_SYNC_PREFIX = 'qb_tm_sync:';
@@ -1500,6 +1500,41 @@ async function getWrongAnswers(question) {
   return key ? wrongGetAll(key) : [];
 }
 
+async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
+  await ensureLoaded();
+  const key = normText(questionText);
+  const rawAnswer = String(wrongAnswerOrCombo || '').replace(/<[^>]+>/g, '').trim();
+  if (!key || !rawAnswer) return;
+
+  const isCombo = courseTag === 'multiselect-combo' || /\s*\|\|\s*/.test(rawAnswer);
+  const combo = isCombo
+    ? rawAnswer.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort()
+    : [];
+  const wrongAnswer = combo.length
+    ? 'MULTISELECT PARTIAL COMBO ' + combo.map((choice) => choice.length + ' ' + choice).join(' ')
+    : rawAnswer;
+  await wrongSet(key, wrongAnswer);
+
+  if (combo.length) return;
+  const answerNorm = normText(rawAnswer);
+  const entry = _answerKeyMem[key];
+  if (!answerNorm || !entry) return;
+  const hits = entry[1].filter((hit) => hitAnswerNorm(hit) !== answerNorm);
+  if (hits.length === entry[1].length) return;
+  if (hits.length) {
+    _answerKeyMem[key] = [entry[0], hits];
+    markKey('ak', key);
+  } else {
+    delete _answerKeyMem[key];
+    markKey('ak', key, true);
+  }
+  scheduleFlush();
+}
+
+async function answerKeyGetWrong(questionText) {
+  return getWrongAnswers(questionText);
+}
+
 async function learnWrong(question, answer) {
   const key = normText(question);
   const value = normText(answer);
@@ -2337,6 +2372,8 @@ async function askOllamaVision(q,o,im){if(!im.length)return -1;try{const r=await
 async function askVision(q,o,im){if(!(cfg('VISION_ENABLED')&&im.length))return -1;console.log('Vision');if(cfg('GEMINI_API_KEY')){const i=await askGeminiVision(q,o,im);if(i!==-1)return i;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const i=await askOpenRouterVision(q,o,im);if(i!==-1)return i;}const i=await askOllamaVision(q,o,im);if(i!==-1)return i;return -1;}
 function _multiPrompt(q,o,n,f){const ot=o.map((x,i)=>(i+1)+'. '+x).join('\n');let p='';if(f&&f.length)p+='Do NOT pick these, already wrong: '+[...f].sort().join(', ')+'\n\n';if(n)p+=n+'\n\n';return p+'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY numbers separated by commas.';}
 function _parsePartialMultiSelectCombo(value){
+  const raw=String(value||'').trim();
+  if(/\s*\|\|\s*/.test(raw))return raw.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort();
   const marker=normText(value);
   const prefix='multiselect partial combo ';
   if(!marker.startsWith(prefix))return null;
@@ -2371,12 +2408,19 @@ function _parseMultiSelectResponse(raw,options,wrongOptions,partialCombos){
   if((partialCombos||[]).some((combo)=>combo.length===selection.length&&combo.every((choice,index)=>choice===selection[index])))return[];
   return indexes;
 }
-async function askAiMultiSelect(question,options){
-  const wrong=await getWrongAnswers(question);
+async function askAiMultiSelect(question,options,wrongList){
+  const wrong=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(question);
   const partial=wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
   const wrongOptions=wrong.filter((value)=>!normText(value).startsWith('multiselect partial '));
   const prompt="This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: "+question+"\n\nOptions:\n"+options.map((option)=>'- '+option).join('\n');
   const context=[];
+  if(wrong.length){
+    const formatted=wrong.map((value)=>{
+      const combo=_parsePartialMultiSelectCombo(value);
+      return combo?combo.join(' || '):value;
+    });
+    context.push('Do NOT return these previously failed/partial combinations: '+formatted.join('; ')+'.');
+  }
   if(partial.length)context.push('Previously recorded partial selections (do not repeat an exact combination): '+partial.map((combo)=>'['+combo.join(', ')+']').join('; ')+'.');
   if(wrongOptions.length)context.push('Options already confirmed wrong: '+wrongOptions.join(', ')+'.');
   const requestPrompt=context.length?prompt+'\n\n'+context.join('\n'):prompt;
@@ -2443,7 +2487,11 @@ function _textPrompt(q,f,v,n,force,courseContext){
   let prompt='';
   const exNote=_excludedNote(f);
   if(exNote)prompt+=exNote+' ';
-  if(f&&f.length)prompt+='CRITICAL: Do NOT answer with: '+[...new Set(f)].sort().join(', ')+'.\n\n';
+  if(f&&f.length){
+    const wrong=[...new Set(f)].sort().join(', ');
+    prompt+='Do NOT output any of these previously marked WRONG answers: '+wrong+'.\n\n';
+    prompt+='CRITICAL: Do NOT answer with: '+wrong+'.\n\n';
+  }
   if(v)prompt+=RETRY_VARIANTS[Math.min(v,RETRY_VARIANTS.length-1)]+'\n\n';
   if(n)prompt=n+'\n\n'+prompt;
   const blankRules=hasBlank
@@ -2478,9 +2526,9 @@ async function askWebText(q){
 
 // -- matching + askAiText + askAi --
 
-async function askAiText(q){
+async function askAiText(q,wrongList){
   const bl=BLANK_RE.test(q);
-  const w=await getWrongAnswers(q);
+  const w=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(q);
   const b=new Set(w.map(x=>normText(x)));
   const local=await localBankAnswerHits(q);
   if(local&&local.length){
@@ -4232,7 +4280,7 @@ async function learnMatchingFromReview(container, containerCorrect, learned) {
     for (const wrong of row.wrongAnswers || []) {
       if (!wrong) continue;
       try {
-        await wrongSet(row.subStatement, wrong);
+        await answerKeyAddWrong(row.subStatement, wrong, 'learned-review');
         if (learned) learned.wrong += 1;
       } catch (error) { /* the wrong cache is advisory */ }
     }
@@ -4303,7 +4351,10 @@ async function learnFromReviewRoot(root, learned) {
     const qText = qTxt(c);
     if (!qText) continue;
     const grade = parseGradeFromReview(c);
-    const containerCorrect = grade && typeof grade.correct === 'boolean' ? grade.correct : null;
+    const partialGrade = grade && grade.earned !== null && grade.max !== null
+      && grade.earned > 0 && grade.earned < grade.max;
+    const containerCorrect = partialGrade ? null
+      : grade && typeof grade.correct === 'boolean' ? grade.correct : null;
 
     // Matching questions are graded row by row: learn each (sub-statement,
     // verified option) pair instead of treating the block as one answer.
@@ -4342,7 +4393,7 @@ async function learnFromReviewRoot(root, learned) {
         const outcome = evidence.optionOutcome(select);
         if (outcome === 'right' || (containerCorrect === true && !evidence.right.length)) {
           evidence.add(evidence.right, selected);
-        } else if (outcome === 'wrong') {
+        } else if (outcome === 'wrong' || (containerCorrect === false && grade && grade.earned <= 0)) {
           evidence.add(evidence.wrong, selected);
         }
       }
@@ -4377,6 +4428,22 @@ async function learnFromReviewRoot(root, learned) {
 
     const checkboxInputs = Array.from(c.querySelectorAll('input[type="checkbox"]'))
       .filter((input) => input.value !== '-1');
+    const checkedChoices = checkboxInputs
+      .filter((input) => input.checked)
+      .map((input) => normalizeReviewText(reviewAnswerText(input)))
+      .filter(Boolean)
+      .filter((choice, index, list) =>
+        list.findIndex((other) => normText(other) === normText(choice)) === index)
+      .sort((a, b) => normText(a).localeCompare(normText(b)));
+    const checkboxCombo = checkedChoices.join(' || ');
+    if (checkboxInputs.length && checkboxCombo && grade && grade.earned <= 0) {
+      try {
+        await answerKeyAddWrong(qText, checkboxCombo, 'multiselect-combo');
+        stats.wrong += 1;
+      } catch (error) {
+        logHUD('warn', 'Could not record incorrect checkbox combination: ' + error.message);
+      }
+    }
     const partialCheckbox = checkboxInputs.length > 0 && grade
       && grade.earned > 0 && grade.max > grade.earned;
     if (partialCheckbox) {
@@ -4386,11 +4453,6 @@ async function learnFromReviewRoot(root, learned) {
         if (text && !allChoices.some((choice) => normText(choice) === normText(text))) allChoices.push(text);
       };
       checkboxInputs.forEach((input) => addChoice(reviewAnswerText(input)));
-      const checkedChoices = [];
-      for (const input of checkboxInputs.filter((item) => item.checked)) {
-        const text = normalizeReviewText(reviewAnswerText(input));
-        if (text && !checkedChoices.some((choice) => normText(choice) === normText(text))) checkedChoices.push(text);
-      }
       const markedCorrect = checkboxInputs
         .filter((input) => input.checked && evidence.optionOutcome(input) === 'right')
         .map((input) => normalizeReviewText(reviewAnswerText(input)))
@@ -4425,9 +4487,7 @@ async function learnFromReviewRoot(root, learned) {
         }
         if (checkedChoices.length) {
           try {
-            const signature = checkedChoices.map(normText).filter(Boolean).sort()
-              .map((choice) => choice.length + ' ' + choice).join(' ');
-            await wrongSet(qText, 'MULTISELECT PARTIAL COMBO ' + signature);
+            await answerKeyAddWrong(qText, checkboxCombo, 'multiselect-combo');
             stats.wrong += 1;
           } catch (error) {
             logHUD('warn', 'Could not record partial checkbox selection: ' + error.message);
@@ -4457,9 +4517,11 @@ async function learnFromReviewRoot(root, learned) {
 
     for (const answer of evidence.wrong) {
       try {
-        await wrongSet(qText, answer);
+        await answerKeyAddWrong(qText, answer, 'learned-review');
         stats.wrong += 1;
-      } catch (error) { /* the wrong cache is advisory */ }
+      } catch (error) {
+        logHUD('warn', 'Could not record wrong review answer: ' + error.message);
+      }
     }
   }
   return stats;
@@ -5059,8 +5121,8 @@ async function submitAttempt() {
   return false;
 }
 // Build a predicate that flags options matching a stored (known-wrong) answer.
-async function buildWrongOptionFilter(qText, options) {
-  const wrong = await getWrongAnswers(qText);
+async function buildWrongOptionFilter(qText, options, wrongList) {
+  const wrong = Array.isArray(wrongList) ? wrongList : await answerKeyGetWrong(qText);
   const set = new Set((wrong || [])
     .map((w) => normText(w))
     .filter((value) => value && !value.startsWith('multiselect partial ')));
@@ -5077,7 +5139,7 @@ async function buildWrongOptionFilter(qText, options) {
 function firstAllowedOption(options, isWrong, preferIdx) {
   if (preferIdx >= 0 && preferIdx < options.length && !isWrong(options[preferIdx])) return preferIdx;
   for (let i = 0; i < options.length; i++) if (!isWrong(options[i])) return i;
-  return preferIdx;
+  return -1;
 }
 
 // Local-bank matches: hits flagged wrong (or whose answer/option is stored as
@@ -5093,6 +5155,7 @@ async function handleQuestion(data) {
   const { text, options, elements, kind, images } = data;
   const qkey = elemSig(elements);
   logHUD('info', 'Q: '+text.slice(0,80));
+  const wrongList = await answerKeyGetWrong(text);
 
   // Review page grade detection: when user clicks Run on /mod/quiz/review.php
   if(isReviewPage()){
@@ -5203,8 +5266,8 @@ async function handleQuestion(data) {
   }
 
   if (kind === 'check') {
-    const isWrong = await buildWrongOptionFilter(text, options);
-    const previousWrong = await getWrongAnswers(text);
+    const isWrong = await buildWrongOptionFilter(text, options, wrongList);
+    const previousWrong = wrongList;
     const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong)
       .filter((match) => match.verified === true);
     if (runCancelled()) return false; // Stop / Run / Disable while we were thinking
@@ -5217,7 +5280,7 @@ async function handleQuestion(data) {
       }
       return true;
     }
-    let picks = await askAiMultiSelect(text, options);
+    let picks = await askAiMultiSelect(text, options, wrongList);
     if (runCancelled()) return false;
     picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {
@@ -5237,7 +5300,7 @@ async function handleQuestion(data) {
   }
 
   if (kind === 'text') {
-    const ans = await askAiText(text);
+    const ans = await askAiText(text, wrongList);
     if (runCancelled()) return false; // never type into a page after Stop
     if (!ans) {
       logHUD('warn','Waiting for manual text input...');
@@ -5251,7 +5314,22 @@ async function handleQuestion(data) {
   }
 
   // Radio / MCQ
-  const isWrong = await buildWrongOptionFilter(text, options);
+  const isWrong = await buildWrongOptionFilter(text, options, wrongList);
+  const validIndices = options.map((option, index) => ({ option, index }))
+    .filter((entry) => !isWrong(entry.option))
+    .map((entry) => entry.index);
+  if (validIndices.length === 0) {
+    logHUD('warn', 'All answer choices are in the wrong-answer blocklist; waiting for manual selection');
+    const ok = await waitForManual(elements, 'radio', text, options);
+    if (!ok) logHUD('warn', 'Manual selection timeout');
+    return ok;
+  }
+  if (validIndices.length === 1) {
+    const index = validIndices[0];
+    if (elements[index]) elements[index].click();
+    logHUD('info', 'Only one answer choice remains outside the wrong-answer blocklist: ' + options[index]);
+    return true;
+  }
   const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
   if (runCancelled()) return false;
   if (localMatches.length) {
@@ -5260,7 +5338,10 @@ async function handleQuestion(data) {
     logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
     return true;
   }
-  let idx = await askAi(text, options, images);
+  const validOptions = validIndices.map((index) => options[index]);
+  let idx = await askAi(text, validOptions, images);
+  if (idx >= 0 && idx < validIndices.length) idx = validIndices[idx];
+  else idx = -1;
   if (runCancelled()) return false; // Stop pressed while the AI was thinking
   // Safety net: never click a stored-wrong option even if a provider returns one.
   if (idx !== -1 && isWrong(options[idx])) idx = firstAllowedOption(options, isWrong, idx);
@@ -6173,6 +6254,41 @@ async function wrongSet(key, values) {
 async function getWrongAnswers(question) {
   const key = normText(question);
   return key ? wrongGetAll(key) : [];
+}
+
+async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
+  await ensureLoaded();
+  const key = normText(questionText);
+  const rawAnswer = String(wrongAnswerOrCombo || '').replace(/<[^>]+>/g, '').trim();
+  if (!key || !rawAnswer) return;
+
+  const isCombo = courseTag === 'multiselect-combo' || /\s*\|\|\s*/.test(rawAnswer);
+  const combo = isCombo
+    ? rawAnswer.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort()
+    : [];
+  const wrongAnswer = combo.length
+    ? 'MULTISELECT PARTIAL COMBO ' + combo.map((choice) => choice.length + ' ' + choice).join(' ')
+    : rawAnswer;
+  await wrongSet(key, wrongAnswer);
+
+  if (combo.length) return;
+  const answerNorm = normText(rawAnswer);
+  const entry = _answerKeyMem[key];
+  if (!answerNorm || !entry) return;
+  const hits = entry[1].filter((hit) => hitAnswerNorm(hit) !== answerNorm);
+  if (hits.length === entry[1].length) return;
+  if (hits.length) {
+    _answerKeyMem[key] = [entry[0], hits];
+    markKey('ak', key);
+  } else {
+    delete _answerKeyMem[key];
+    markKey('ak', key, true);
+  }
+  scheduleFlush();
+}
+
+async function answerKeyGetWrong(questionText) {
+  return getWrongAnswers(questionText);
 }
 
 async function learnWrong(question, answer) {
@@ -11425,6 +11541,33 @@ try {
               }
               claimSquad('exam');
               return;
+            }
+            if (enabled && location.pathname.includes('/mod/quiz/review.php')) {
+              const ownedCat = SQUAD_SLOTS.find((id) => squad[id].tabId === myTabId);
+              if (ownedCat) {
+                myCatId = ownedCat;
+                myTask = 'review';
+                squad[ownedCat] = {
+                  ...squad[ownedCat],
+                  task: 'review',
+                  url: pageUrl(),
+                  workLockUntil: _activeWorkUntil,
+                  updatedAt: Date.now(),
+                };
+                updateSquad((next) => {
+                  const slot = next[ownedCat];
+                  if (slot.tabId !== myTabId) return;
+                  next[ownedCat] = {
+                    ...slot,
+                    task: 'review',
+                    url: pageUrl(),
+                    workLockUntil: _activeWorkUntil,
+                    updatedAt: Date.now(),
+                  };
+                });
+                applyPresence();
+                return;
+              }
             }
             // Boot may land mid-review (score page): honour that working state
             // instead of quietly claiming an idle cat. Otherwise appear quietly,

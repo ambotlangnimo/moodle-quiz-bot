@@ -489,6 +489,41 @@ async function getWrongAnswers(question) {
   return key ? wrongGetAll(key) : [];
 }
 
+async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
+  await ensureLoaded();
+  const key = normText(questionText);
+  const rawAnswer = String(wrongAnswerOrCombo || '').replace(/<[^>]+>/g, '').trim();
+  if (!key || !rawAnswer) return;
+
+  const isCombo = courseTag === 'multiselect-combo' || /\s*\|\|\s*/.test(rawAnswer);
+  const combo = isCombo
+    ? rawAnswer.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort()
+    : [];
+  const wrongAnswer = combo.length
+    ? 'MULTISELECT PARTIAL COMBO ' + combo.map((choice) => choice.length + ' ' + choice).join(' ')
+    : rawAnswer;
+  await wrongSet(key, wrongAnswer);
+
+  if (combo.length) return;
+  const answerNorm = normText(rawAnswer);
+  const entry = _answerKeyMem[key];
+  if (!answerNorm || !entry) return;
+  const hits = entry[1].filter((hit) => hitAnswerNorm(hit) !== answerNorm);
+  if (hits.length === entry[1].length) return;
+  if (hits.length) {
+    _answerKeyMem[key] = [entry[0], hits];
+    markKey('ak', key);
+  } else {
+    delete _answerKeyMem[key];
+    markKey('ak', key, true);
+  }
+  scheduleFlush();
+}
+
+async function answerKeyGetWrong(questionText) {
+  return getWrongAnswers(questionText);
+}
+
 async function learnWrong(question, answer) {
   const key = normText(question);
   const value = normText(answer);

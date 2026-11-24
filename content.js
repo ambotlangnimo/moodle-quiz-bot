@@ -1442,7 +1442,7 @@ async function learnMatchingFromReview(container, containerCorrect, learned) {
     for (const wrong of row.wrongAnswers || []) {
       if (!wrong) continue;
       try {
-        await wrongSet(row.subStatement, wrong);
+        await answerKeyAddWrong(row.subStatement, wrong, 'learned-review');
         if (learned) learned.wrong += 1;
       } catch (error) { /* the wrong cache is advisory */ }
     }
@@ -1513,7 +1513,10 @@ async function learnFromReviewRoot(root, learned) {
     const qText = qTxt(c);
     if (!qText) continue;
     const grade = parseGradeFromReview(c);
-    const containerCorrect = grade && typeof grade.correct === 'boolean' ? grade.correct : null;
+    const partialGrade = grade && grade.earned !== null && grade.max !== null
+      && grade.earned > 0 && grade.earned < grade.max;
+    const containerCorrect = partialGrade ? null
+      : grade && typeof grade.correct === 'boolean' ? grade.correct : null;
 
     // Matching questions are graded row by row: learn each (sub-statement,
     // verified option) pair instead of treating the block as one answer.
@@ -1552,7 +1555,7 @@ async function learnFromReviewRoot(root, learned) {
         const outcome = evidence.optionOutcome(select);
         if (outcome === 'right' || (containerCorrect === true && !evidence.right.length)) {
           evidence.add(evidence.right, selected);
-        } else if (outcome === 'wrong') {
+        } else if (outcome === 'wrong' || (containerCorrect === false && grade && grade.earned <= 0)) {
           evidence.add(evidence.wrong, selected);
         }
       }
@@ -1587,6 +1590,22 @@ async function learnFromReviewRoot(root, learned) {
 
     const checkboxInputs = Array.from(c.querySelectorAll('input[type="checkbox"]'))
       .filter((input) => input.value !== '-1');
+    const checkedChoices = checkboxInputs
+      .filter((input) => input.checked)
+      .map((input) => normalizeReviewText(reviewAnswerText(input)))
+      .filter(Boolean)
+      .filter((choice, index, list) =>
+        list.findIndex((other) => normText(other) === normText(choice)) === index)
+      .sort((a, b) => normText(a).localeCompare(normText(b)));
+    const checkboxCombo = checkedChoices.join(' || ');
+    if (checkboxInputs.length && checkboxCombo && grade && grade.earned <= 0) {
+      try {
+        await answerKeyAddWrong(qText, checkboxCombo, 'multiselect-combo');
+        stats.wrong += 1;
+      } catch (error) {
+        logHUD('warn', 'Could not record incorrect checkbox combination: ' + error.message);
+      }
+    }
     const partialCheckbox = checkboxInputs.length > 0 && grade
       && grade.earned > 0 && grade.max > grade.earned;
     if (partialCheckbox) {
@@ -1596,11 +1615,6 @@ async function learnFromReviewRoot(root, learned) {
         if (text && !allChoices.some((choice) => normText(choice) === normText(text))) allChoices.push(text);
       };
       checkboxInputs.forEach((input) => addChoice(reviewAnswerText(input)));
-      const checkedChoices = [];
-      for (const input of checkboxInputs.filter((item) => item.checked)) {
-        const text = normalizeReviewText(reviewAnswerText(input));
-        if (text && !checkedChoices.some((choice) => normText(choice) === normText(text))) checkedChoices.push(text);
-      }
       const markedCorrect = checkboxInputs
         .filter((input) => input.checked && evidence.optionOutcome(input) === 'right')
         .map((input) => normalizeReviewText(reviewAnswerText(input)))
@@ -1635,9 +1649,7 @@ async function learnFromReviewRoot(root, learned) {
         }
         if (checkedChoices.length) {
           try {
-            const signature = checkedChoices.map(normText).filter(Boolean).sort()
-              .map((choice) => choice.length + ' ' + choice).join(' ');
-            await wrongSet(qText, 'MULTISELECT PARTIAL COMBO ' + signature);
+            await answerKeyAddWrong(qText, checkboxCombo, 'multiselect-combo');
             stats.wrong += 1;
           } catch (error) {
             logHUD('warn', 'Could not record partial checkbox selection: ' + error.message);
@@ -1667,9 +1679,11 @@ async function learnFromReviewRoot(root, learned) {
 
     for (const answer of evidence.wrong) {
       try {
-        await wrongSet(qText, answer);
+        await answerKeyAddWrong(qText, answer, 'learned-review');
         stats.wrong += 1;
-      } catch (error) { /* the wrong cache is advisory */ }
+      } catch (error) {
+        logHUD('warn', 'Could not record wrong review answer: ' + error.message);
+      }
     }
   }
   return stats;
@@ -2269,8 +2283,8 @@ async function submitAttempt() {
   return false;
 }
 // Build a predicate that flags options matching a stored (known-wrong) answer.
-async function buildWrongOptionFilter(qText, options) {
-  const wrong = await getWrongAnswers(qText);
+async function buildWrongOptionFilter(qText, options, wrongList) {
+  const wrong = Array.isArray(wrongList) ? wrongList : await answerKeyGetWrong(qText);
   const set = new Set((wrong || [])
     .map((w) => normText(w))
     .filter((value) => value && !value.startsWith('multiselect partial ')));
@@ -2287,7 +2301,7 @@ async function buildWrongOptionFilter(qText, options) {
 function firstAllowedOption(options, isWrong, preferIdx) {
   if (preferIdx >= 0 && preferIdx < options.length && !isWrong(options[preferIdx])) return preferIdx;
   for (let i = 0; i < options.length; i++) if (!isWrong(options[i])) return i;
-  return preferIdx;
+  return -1;
 }
 
 // Local-bank matches: hits flagged wrong (or whose answer/option is stored as
@@ -2303,6 +2317,7 @@ async function handleQuestion(data) {
   const { text, options, elements, kind, images } = data;
   const qkey = elemSig(elements);
   logHUD('info', 'Q: '+text.slice(0,80));
+  const wrongList = await answerKeyGetWrong(text);
 
   // Review page grade detection: when user clicks Run on /mod/quiz/review.php
   if(isReviewPage()){
@@ -2413,8 +2428,8 @@ async function handleQuestion(data) {
   }
 
   if (kind === 'check') {
-    const isWrong = await buildWrongOptionFilter(text, options);
-    const previousWrong = await getWrongAnswers(text);
+    const isWrong = await buildWrongOptionFilter(text, options, wrongList);
+    const previousWrong = wrongList;
     const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong)
       .filter((match) => match.verified === true);
     if (runCancelled()) return false; // Stop / Run / Disable while we were thinking
@@ -2427,7 +2442,7 @@ async function handleQuestion(data) {
       }
       return true;
     }
-    let picks = await askAiMultiSelect(text, options);
+    let picks = await askAiMultiSelect(text, options, wrongList);
     if (runCancelled()) return false;
     picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {
@@ -2447,7 +2462,7 @@ async function handleQuestion(data) {
   }
 
   if (kind === 'text') {
-    const ans = await askAiText(text);
+    const ans = await askAiText(text, wrongList);
     if (runCancelled()) return false; // never type into a page after Stop
     if (!ans) {
       logHUD('warn','Waiting for manual text input...');
@@ -2461,7 +2476,22 @@ async function handleQuestion(data) {
   }
 
   // Radio / MCQ
-  const isWrong = await buildWrongOptionFilter(text, options);
+  const isWrong = await buildWrongOptionFilter(text, options, wrongList);
+  const validIndices = options.map((option, index) => ({ option, index }))
+    .filter((entry) => !isWrong(entry.option))
+    .map((entry) => entry.index);
+  if (validIndices.length === 0) {
+    logHUD('warn', 'All answer choices are in the wrong-answer blocklist; waiting for manual selection');
+    const ok = await waitForManual(elements, 'radio', text, options);
+    if (!ok) logHUD('warn', 'Manual selection timeout');
+    return ok;
+  }
+  if (validIndices.length === 1) {
+    const index = validIndices[0];
+    if (elements[index]) elements[index].click();
+    logHUD('info', 'Only one answer choice remains outside the wrong-answer blocklist: ' + options[index]);
+    return true;
+  }
   const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
   if (runCancelled()) return false;
   if (localMatches.length) {
@@ -2470,7 +2500,10 @@ async function handleQuestion(data) {
     logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
     return true;
   }
-  let idx = await askAi(text, options, images);
+  const validOptions = validIndices.map((index) => options[index]);
+  let idx = await askAi(text, validOptions, images);
+  if (idx >= 0 && idx < validIndices.length) idx = validIndices[idx];
+  else idx = -1;
   if (runCancelled()) return false; // Stop pressed while the AI was thinking
   // Safety net: never click a stored-wrong option even if a provider returns one.
   if (idx !== -1 && isWrong(options[idx])) idx = firstAllowedOption(options, isWrong, idx);

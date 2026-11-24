@@ -3450,6 +3450,33 @@ try {
               claimSquad('exam');
               return;
             }
+            if (enabled && location.pathname.includes('/mod/quiz/review.php')) {
+              const ownedCat = SQUAD_SLOTS.find((id) => squad[id].tabId === myTabId);
+              if (ownedCat) {
+                myCatId = ownedCat;
+                myTask = 'review';
+                squad[ownedCat] = {
+                  ...squad[ownedCat],
+                  task: 'review',
+                  url: pageUrl(),
+                  workLockUntil: _activeWorkUntil,
+                  updatedAt: Date.now(),
+                };
+                updateSquad((next) => {
+                  const slot = next[ownedCat];
+                  if (slot.tabId !== myTabId) return;
+                  next[ownedCat] = {
+                    ...slot,
+                    task: 'review',
+                    url: pageUrl(),
+                    workLockUntil: _activeWorkUntil,
+                    updatedAt: Date.now(),
+                  };
+                });
+                applyPresence();
+                return;
+              }
+            }
             // Boot may land mid-review (score page): honour that working state
             // instead of quietly claiming an idle cat. Otherwise appear quietly,
             // no greeting on a plain page load.

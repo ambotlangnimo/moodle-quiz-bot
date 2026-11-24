@@ -411,6 +411,8 @@ async function askOllamaVision(q,o,im){if(!im.length)return -1;try{const r=await
 async function askVision(q,o,im){if(!(cfg('VISION_ENABLED')&&im.length))return -1;console.log('Vision');if(cfg('GEMINI_API_KEY')){const i=await askGeminiVision(q,o,im);if(i!==-1)return i;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const i=await askOpenRouterVision(q,o,im);if(i!==-1)return i;}const i=await askOllamaVision(q,o,im);if(i!==-1)return i;return -1;}
 function _multiPrompt(q,o,n,f){const ot=o.map((x,i)=>(i+1)+'. '+x).join('\n');let p='';if(f&&f.length)p+='Do NOT pick these, already wrong: '+[...f].sort().join(', ')+'\n\n';if(n)p+=n+'\n\n';return p+'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY numbers separated by commas.';}
 function _parsePartialMultiSelectCombo(value){
+  const raw=String(value||'').trim();
+  if(/\s*\|\|\s*/.test(raw))return raw.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort();
   const marker=normText(value);
   const prefix='multiselect partial combo ';
   if(!marker.startsWith(prefix))return null;
@@ -445,12 +447,19 @@ function _parseMultiSelectResponse(raw,options,wrongOptions,partialCombos){
   if((partialCombos||[]).some((combo)=>combo.length===selection.length&&combo.every((choice,index)=>choice===selection[index])))return[];
   return indexes;
 }
-async function askAiMultiSelect(question,options){
-  const wrong=await getWrongAnswers(question);
+async function askAiMultiSelect(question,options,wrongList){
+  const wrong=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(question);
   const partial=wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
   const wrongOptions=wrong.filter((value)=>!normText(value).startsWith('multiselect partial '));
   const prompt="This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: "+question+"\n\nOptions:\n"+options.map((option)=>'- '+option).join('\n');
   const context=[];
+  if(wrong.length){
+    const formatted=wrong.map((value)=>{
+      const combo=_parsePartialMultiSelectCombo(value);
+      return combo?combo.join(' || '):value;
+    });
+    context.push('Do NOT return these previously failed/partial combinations: '+formatted.join('; ')+'.');
+  }
   if(partial.length)context.push('Previously recorded partial selections (do not repeat an exact combination): '+partial.map((combo)=>'['+combo.join(', ')+']').join('; ')+'.');
   if(wrongOptions.length)context.push('Options already confirmed wrong: '+wrongOptions.join(', ')+'.');
   const requestPrompt=context.length?prompt+'\n\n'+context.join('\n'):prompt;
@@ -517,7 +526,11 @@ function _textPrompt(q,f,v,n,force,courseContext){
   let prompt='';
   const exNote=_excludedNote(f);
   if(exNote)prompt+=exNote+' ';
-  if(f&&f.length)prompt+='CRITICAL: Do NOT answer with: '+[...new Set(f)].sort().join(', ')+'.\n\n';
+  if(f&&f.length){
+    const wrong=[...new Set(f)].sort().join(', ');
+    prompt+='Do NOT output any of these previously marked WRONG answers: '+wrong+'.\n\n';
+    prompt+='CRITICAL: Do NOT answer with: '+wrong+'.\n\n';
+  }
   if(v)prompt+=RETRY_VARIANTS[Math.min(v,RETRY_VARIANTS.length-1)]+'\n\n';
   if(n)prompt=n+'\n\n'+prompt;
   const blankRules=hasBlank
@@ -552,9 +565,9 @@ async function askWebText(q){
 
 // -- matching + askAiText + askAi --
 
-async function askAiText(q){
+async function askAiText(q,wrongList){
   const bl=BLANK_RE.test(q);
-  const w=await getWrongAnswers(q);
+  const w=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(q);
   const b=new Set(w.map(x=>normText(x)));
   const local=await localBankAnswerHits(q);
   if(local&&local.length){

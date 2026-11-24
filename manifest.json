@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.5.3",
+  "version": "3.6.0",
   "description": "Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.",
   "permissions": [
     "storage",
