@@ -1,4 +1,8 @@
 let _stopRequested = false, _loopActive = false, _hudShadow = null, _hudRoot = null, _lastExtractionWarning = '';
+// Set by extractQuestionData() when the only remaining `.que` block(s) are
+// matching questions whose dropdowns are already complete: startLoop() then
+// advances instead of re-detecting the block as unanswered.
+let _lastScanMatchingAnswered = false;
 const _autoHarvestRequested = new Set();
 const HARVEST_STOP_WORDS = new Set([
   'a', 'an', 'and', 'of', 'the', 'for', 'in', 'its', 'to', 'with',
@@ -882,12 +886,32 @@ function setMatchingSelect(selectEl, optionText) {
   } catch (error) { return false; }
 }
 
-function hasMatchingSelection(selectEl) {
-  if (!selectEl) return false;
+// A <select> only counts as answered when a real option is picked. Moodle's
+// matching dropdowns put the "Choose..." placeholder at index 0, so `> 0` alone
+// rejects it even when a theme gives the placeholder a non-empty value.
+function isSelectAnswerChosen(selectEl) {
+  if (!selectEl || selectEl.disabled) return false;
+  if (typeof selectEl.selectedIndex !== 'number' || selectEl.selectedIndex <= 0) return false;
+  const option = selectEl.options && selectEl.options[selectEl.selectedIndex] ? selectEl.options[selectEl.selectedIndex] : null;
   const value = String(selectEl.value || '');
-  if (value && value !== '0' && value !== '-1' && !/^choose/i.test(value)) return true;
-  const option = selectEl.options && selectEl.selectedIndex >= 0 ? selectEl.options[selectEl.selectedIndex] : null;
-  return !!(option && option.value && option.value !== '0' && !/^choose/i.test(option.text || ''));
+  const selectedText = String(option ? (option.text || '') : '');
+  return value !== '' && value !== '0' && value !== '-1' && !/^choose/i.test(selectedText);
+}
+
+// True when every enabled dropdown in a `.que` block already holds a valid
+// answer (Text/Currency/Number/Paragraph Text/...). A block without any enabled
+// dropdown has nothing this bot could fill, so it is not called complete here.
+function allMatchingSelectsAnswered(containerOrSelects) {
+  const selects = Array.isArray(containerOrSelects)
+    ? containerOrSelects
+    : matchingSelects(containerOrSelects);
+  const enabled = selects.filter((select) => select && !select.disabled);
+  if (!enabled.length) return false;
+  return enabled.every(isSelectAnswerChosen);
+}
+
+function hasMatchingSelection(selectEl) {
+  return isSelectAnswerChosen(selectEl);
 }
 
 // Rows answered by a Moodle-confirmed (verified: true) bank hit are filled
@@ -917,6 +941,8 @@ async function fillMatchingFromBank(rows, options, used) {
 function extractQuestionData() {
   const all = getQContainers();
   const ANSWERED = new Set(['correct','incorrect','partiallycorrect','answersaved','complete','finished','gradedwrong','gradedright']);
+  // Fresh verdict for this scan: startLoop() reads it after a null result.
+  _lastScanMatchingAnswered = false;
   let firstSkipReason = '';
   const noteFirstSkip = (reason) => { if (!firstSkipReason) firstSkipReason = reason; };
   const foundQuestion = (data) => { _lastExtractionWarning = ''; return data; };
@@ -928,6 +954,14 @@ function extractQuestionData() {
     }
     const selects = cfg('MATCHING_ENABLED') ? matchingSelects(c) : [];
     if (selects.length) {
+      // Every enabled dropdown already holds a real choice: the matching block
+      // is done. Returning it again made startLoop() spin forever on the same
+      // `.que` and never click Next.
+      if (allMatchingSelectsAnswered(selects)) {
+        _lastScanMatchingAnswered = true;
+        noteFirstSkip('matching dropdowns are already answered');
+        continue;
+      }
       const items = [];
       for (const s of selects) { for (const o of s.options) { if (o.value && o.value !== '0' && !o.text.toLowerCase().startsWith('choose')) items.push(o.text.trim()); } }
       const uniq = [...new Set(items)];
@@ -1083,7 +1117,7 @@ function waitForManual(elements, kind, question = '', options = [], statements =
 async function clickNext() {
   try {
     window.scrollBy(0,500); await new Promise(r=>setTimeout(r,150));
-    for (const sel of ['#mod_quiz-next-nav','input#mod_quiz-next-nav','button#mod_quiz-next-nav','#mod_quiz-next-nav','button[name="nextbutton"]','input[value="Next page"]']) {
+    for (const sel of ['input[name="next"]','#mod_quiz-next-nav','button[name="next"]','button[name="nextbutton"]','input[value="Next page"]']) {
       const btn = document.querySelector(sel); if (btn) { btn.click(); return true; }
     }
     // Fallback: find any button whose text contains "Next"
@@ -2375,6 +2409,27 @@ async function handleQuestion(data) {
   return true;
 }
 
+// Stable per-question key used by startLoop()'s attempt guard: Moodle's
+// `.que` id (e.g. "question-123-4") when present, otherwise the same signature
+// the answered-question set uses.
+function questionIdFromData(data) {
+  const first = data && data.elements && data.elements[0];
+  let container = null;
+  try { container = first && first.closest ? first.closest('div.que') : null; }
+  catch (error) { container = null; }
+  return (container && container.id) || elemSig(data && data.elements) || normText(String((data && data.text) || '')).slice(0, 120);
+}
+
+// How many controls of the current question still need an answer. A count that
+// does not grow between scans means the bot is no longer making progress.
+function countEmptyControls(data) {
+  const els = data && data.elements;
+  if (!els || !els.length) return 0;
+  if (data.kind === 'select') return els.filter((select) => !select.disabled && !isSelectAnswerChosen(select)).length;
+  if (data.kind === 'text') return els.filter((el) => !(el.value || '').trim()).length;
+  return els.filter((el) => !el.checked && !el.disabled).length;
+}
+
 async function startLoop() {
   if (_loopActive) return;
   // Reserve the lock before the first await so two clicks can never start two
@@ -2400,6 +2455,12 @@ async function startLoop() {
     _hudRoot?.classList?.add('active');
 
     const handledQuestions = new Set();
+    // Per-question attempt guard: the exact same `.que` id processed more than
+    // twice in a row without new empty controls is marked done for this page
+    // pass so startLoop() cannot spin on it forever.
+    const attemptsByQuestionId = new Map();
+    let lastQuestionId = '';
+    let lastAdvanceAttemptAt = 0;
     let totalAnswered = 0;
     let emptyScans = 0;
     let stalls = 0;
@@ -2441,17 +2502,49 @@ async function startLoop() {
         const data = extractQuestionData();
         if (!data) {
           emptyScans++;
-          if (emptyScans >= 6 && totalAnswered > 0) {
-            logHUD('info', 'All answered - advancing');
-            const ok = cfg('AUTO_CLICK_NEXT') ? await clickNext() : false;
-            if (!ok) await clickFinish();
+          // `_lastScanMatchingAnswered`: the only matching blocks left have all
+          // their dropdowns filled, so advance even if this run answered none of
+          // them (Run pressed on a page whose dropdowns were already complete).
+          if (_lastScanMatchingAnswered || (emptyScans >= 6 && totalAnswered > 0)) {
+            // Throttle log+click: a missing Next button must not spam the HUD.
+            if (Date.now() - lastAdvanceAttemptAt >= 1500) {
+              lastAdvanceAttemptAt = Date.now();
+              logHUD('info', 'All answered — advancing');
+              const ok = cfg('AUTO_CLICK_NEXT') ? await clickNext() : false;
+              if (!ok) await clickFinish();
+            }
             handledQuestions.clear();
+            attemptsByQuestionId.clear();
+            lastQuestionId = '';
           }
           continue;
         }
         emptyScans = 0;
         totalAnswered++;
         addResultEntry(data.text, '', '', '');
+
+        // Loop guard: count consecutive extractions of the exact same question.
+        // More than two passes with no new empty inputs means no progress, so
+        // mark it done for this page pass and advance instead of logging again.
+        const qid = questionIdFromData(data);
+        const emptyCount = countEmptyControls(data);
+        const previousAttempt = attemptsByQuestionId.get(qid);
+        const attempts = (previousAttempt ? previousAttempt.attempts : 0) + 1;
+        const noNewEmptyInputs = !!previousAttempt && emptyCount >= previousAttempt.empty;
+        attemptsByQuestionId.set(qid, { attempts, empty: emptyCount });
+        if (previousAttempt && qid === lastQuestionId && attempts > 2 && noNewEmptyInputs) {
+          if (Date.now() - lastAdvanceAttemptAt >= 1500) {
+            lastAdvanceAttemptAt = Date.now();
+            logHUD('info', 'All answered — advancing');
+            const ok = cfg('AUTO_CLICK_NEXT') ? await clickNext() : false;
+            if (!ok) await clickFinish();
+          }
+          handledQuestions.clear();
+          attemptsByQuestionId.clear();
+          lastQuestionId = '';
+          continue;
+        }
+        lastQuestionId = qid;
 
         const sig = elemSig(data.elements);
         if (handledQuestions.has(sig)) continue;
