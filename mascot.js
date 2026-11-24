@@ -542,7 +542,8 @@ try {
     // /harvest/ would match the "…or use Harvest Page." boot banner) and a quiz
     // question such as "Q: What is a stop sign?" must never end the run.
     const WORK_START_RE = /^(?:bot started|q:|question:|option\s*\d|selected\b|matched\b|typed\b|all answered|harvest\s+"|auto-harvesting answers|scanning grade report|review harvest|answer harvesting is running)/;
-    const WORK_END_RE = /^(?:bot stopped|stop(?:ped)?\b|quiz complete|review scan:|harvested)/;
+    const HARVEST_ABORT_RE = /^(?:harvesting failed|no q&a|nothing to harvest|harvest stopped)/;
+    const WORK_END_RE = /^(?:bot stopped|stop(?:ped)?\b|quiz complete|review scan:|harvested|harvesting failed|no q&a|nothing to harvest|harvest stopped)/;
     const PILL_TEXT = '🐾 Cat squad is working on another tab...';
     const WORK_PILL_TEXT = '🐾 Cat squad is busy working on another tab...';
     const PILL_CLASS = 'qb-pill-visible';
@@ -1898,13 +1899,13 @@ try {
     function noteWorkLockLine(line) {
       if (!line) return;
       if (WORK_END_RE.test(line)) {
-        if (!_activeWorkUntil) return;
+        const harvestAborted = HARVEST_ABORT_RE.test(line);
+        if (!_activeWorkUntil && !harvestAborted) return;
         _activeWorkUntil = 0;
         lastWorkLockPushAt = 0; // the next run publishes at once
-        // The run really ended. If the cat is already idle on this tab, hand the
-        // slot back and bring Mochi home; otherwise just clear the work lock and
-        // let the state change to idle do the hand-back (one storage write only).
-        if (currentState === 'idle') { releaseBusy(); return; }
+        // Failed/empty harvests release their slot immediately; other active runs
+        // only clear the lock and let the state change to idle hand the slot back.
+        if (currentState === 'idle' || harvestAborted) { releaseBusy(); return; }
         publishWorkLock();
         return;
       }
@@ -2293,7 +2294,6 @@ try {
     // Swap the primary canvas to the cat this tab now owns (new palette,
     // accessory, aria-label and badge title), then repaint at once.
     function applyCatIdentity() {
-      if (hangout.active) stopSquadHangout();
       const cat = CATS[assignedCatId] || CATS.mochi;
       if (catEl) {
         catEl.dataset.cat = assignedCatId;
@@ -2549,7 +2549,6 @@ try {
       hangout.lineTimer = setTimeout(() => {
         hangout.lineTimer = null;
         if (!hangout.active) return;
-        if (!canHangout()) { stopSquadHangout(); return; }
         const speakers = [assignedCatId].concat(hangout.cats.map((cat) => cat.id));
         const id = speakers[Math.floor(Math.random() * speakers.length)];
         const line = pickCatLine(id, 'hang') || pickFreshLine(HANG_LINES);
