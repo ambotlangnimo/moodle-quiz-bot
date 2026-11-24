@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle Quiz Bot + 3-Cat Squad
 // @namespace    https://github.com/ambotlangnimo/moodle-quiz-bot
-// @version      3.4.3
+// @version      3.5.1
 // @description  Auto-answers Moodle quizzes, harvests study sites, syncs with GitHub Question Bank, and features a 3-Cat Pixel Squad.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -28,7 +28,7 @@
 (function () {
 'use strict';
 
-const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.4.4","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
+const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.5.1","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
 const QB_TM_HUD_CSS = "/* ─────────────────────────────────────────────────────────────────────────────\n   hud.css — Quiz Bot HUD panel (Shadow-DOM-scoped styles)\n   Never intercepts page clicks except its own buttons.\n\n   Layout: the HUD host sits 165px from the right edge so the standalone\n   roaming mascot (extension/mascot.js, a 130 px pixel-art canvas, parked\n   bottom-right and wandering Shimeji-style) can never cover the Run / Stop /\n   Clear / Harvest buttons. All mascot styling lives in mascot.js — this file\n   only styles the closed-shadow HUD plus the light-DOM harvester HUD below.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n/* The mascot is a 96×96 pixel-art canvas scaled up: keep every sprite pixel a\n   crisp square even if a host page tries to smooth images globally. The rule is\n   a no-op for every other element (mascot.js styles him too). */\n#qb-mascot-wrap canvas {\n  image-rendering: crisp-edges;\n  image-rendering: pixelated;\n}\n\n:host {\n  all: initial;\n  display: block;\n  position: fixed;\n  z-index: 2147483647;\n  bottom: 20px;\n  right: 165px;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  max-height: calc(100vh - 40px);\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e0e0e0;\n  pointer-events: none;\n}\n\n:host(.active) {\n  pointer-events: auto;\n}\n\n/* --- Speech-bubble HUD panel --- */\n#hud-root,\n#qb-hud,\n.qb-panel {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  box-sizing: border-box;\n  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);\n  border: 1px solid #16213e;\n  border-radius: 12px;\n  box-shadow: 0 12px 48px rgba(0,0,0,0.5);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  max-height: calc(100vh - 40px);\n  pointer-events: auto;\n}\n\n/* Narrow viewports: stack the panel above the mascot instead of beside it. */\n@media (max-width: 564px) {\n  :host {\n    right: 20px;\n    bottom: 20px;\n    width: calc(100vw - 40px);\n    max-width: calc(100vw - 40px);\n  }\n  #hud-root,\n  #qb-hud,\n  .qb-panel {\n    right: 0;\n    bottom: 148px;\n    width: 100%;\n    max-width: calc(100vw - 40px);\n    max-height: calc(100vh - 260px);\n  }\n}\n\n:host(.active) #hud-root { pointer-events: auto; }\n\n#hud-header {\n  background: linear-gradient(135deg, #082040 0%, #1a3a5c 100%);\n  padding: 10px 12px;\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: move;\n  user-select: none;\n  flex-shrink: 0;\n  border-bottom: 1px solid #16213e;\n}\n\n#hud-title {\n  flex: 1;\n  font-weight: 600;\n  font-size: 13px;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#hud-status {\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: #16213e;\n  white-space: nowrap;\n}\n\n#hud-status.running { color: #4ade80; }\n#hud-status.stopped { color: #f87171; }\n#hud-status.waiting { color: #fbbf24; }\n#hud-status.reviewing { color: #f5b74f; }\n\n#hud-minimize-btn {\n  width: 28px;\n  height: 28px;\n  background: #16213e;\n  border: 1px solid #4a5568;\n  border-radius: 6px;\n  color: #a0aec0;\n  font-size: 16px;\n  font-weight: bold;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: auto;\n  flex-shrink: 0;\n}\n\n#hud-minimize-btn:hover { background: #2d3748; color: #e2e8f0; }\n\n#hud-minimize-btn.collapsed { background: #3182ce; color: white; }\n\n/* Speech bubble pointing to mascot */\n#hud-bubble {\n  position: relative;\n  margin: 8px 12px;\n  padding: 10px 12px;\n  background: rgba(255,255,255,0.08);\n  backdrop-filter: blur(12px);\n  border-radius: 18px;\n  border: 1px solid rgba(255,255,255,0.15);\n  box-shadow: 0 4px 20px rgba(0,0,0,0.3);\n  pointer-events: auto;\n  max-width: 85%;\n  word-break: break-word;\n}\n\n#hud-bubble::after {\n  content: \"\";\n  position: absolute;\n  bottom: -10px;\n  right: 20px;\n  border-width: 10px 10px 0;\n  border-style: solid;\n  border-color: rgba(255,255,255,0.08) transparent;\n  display: block;\n  width: 0;\n  z-index: 1;\n  pointer-events: none;\n}\n\n/* Latest status line */\n#hud-status-line {\n  font-size: 11px;\n  opacity: 0.7;\n  margin-top: 6px;\n  color: #7f8c8d;\n}\n\n/* Log box */\n#hud-body {\n  padding: 8px 12px;\n  overflow-y: auto;\n  flex: 1;\n  max-height: 220px;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 #16213e;\n}\n\n#hud-body::-webkit-scrollbar { width: 4px; }\n#hud-body::-webkit-scrollbar-track { background: #16213e; }\n#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n.hud-entry {\n  padding: 4px 0;\n  border-bottom: 1px solid rgba(255,255,255,0.08);\n  font-size: 12px;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.hud-entry:last-child { border-bottom: none; }\n\n.hud-entry .q-text {\n  color: #cbd5e0;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-tier {\n  font-size: 10px;\n  background: #0f3460;\n  padding: 1px 6px;\n  border-radius: 6px;\n  color: #60a5fa;\n  white-space: nowrap;\n}\n\n.hud-entry .q-answer {\n  color: #4ade80;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-score {\n  font-size: 10px;\n  color: #7f8c8d;\n}\n\n/* Button row */\n#hud-footer {\n  padding: 8px 12px;\n  display: flex;\n  gap: 6px;\n  flex-shrink: 0;\n  border-top: 1px solid rgba(255,255,255,0.08);\n  background: rgba(0,0,0,0.1);\n}\n\n.hud-btn {\n  pointer-events: auto;\n  border: none;\n  border-radius: 6px;\n  padding: 5px 12px;\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: background 0.15s;\n  flex: 1;\n}\n\n#hud-stop-btn {\n  background: #e53e3e;\n  color: white;\n}\n#hud-stop-btn:hover { background: #c53030; }\n\n#hud-clear-btn {\n  background: #374151;\n  color: #d1d5db;\n}\n#hud-clear-btn:hover { background: #4b5563; }\n\n#hud-harvest-btn {\n  background: #0f766e;\n  color: white;\n}\n#hud-harvest-btn:hover { background: #0d5f59; }\n\n#hud-toggle-btn {\n  background: #3182ce;\n  color: white;\n}\n#hud-toggle-btn:hover { background: #2c5282; }\n#hud-toggle-btn.active { background: #38bdf8; }\n\n/* Log line styles */\n.hud-log-line {\n  font-size: 11px;\n  color: #64748b;\n  padding: 1px 0;\n  border-bottom: 1px solid rgba(22,33,62,0.3);\n}\n\n.hud-log-line.info { color: #94a3b8; }\n.hud-log-line.success { color: #4ade80; }\n.hud-log-line.warn { color: #fbbf24; }\n.hud-log-line.error { color: #f87171; }\n\n/* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */\n:host(.minimized) #hud-root { display: none; }\n\n/* ─────────────────────────────────────────────────────────────────────────────\n   Universal Harvester HUD (universal-harvester.js)\n\n   This block is the *page-level* twin of the Shadow-DOM HUD above: manifest.json\n   injects hud.css into every site, so #qb-hud lives in the normal light DOM and\n   is styled directly. The `:host` rules above only ever match inside the closed\n   shadow root on amaes.com and are harmless here.\n\n   Status chips reuse the Moodle class names (running / stopped / waiting /\n   reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot\n   recognises harvest progress and narrates it with its harvesting / review\n   pixel animations.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n#qb-hud {\n  position: fixed;\n  right: 165px;\n  bottom: 20px;\n  z-index: 2147483646;\n  width: 372px;\n  max-width: calc(100vw - 40px);\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: column;\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e2e8f0;\n  background: linear-gradient(135deg, rgba(30, 42, 71, 0.94) 0%, rgba(15, 52, 96, 0.94) 100%);\n  -webkit-backdrop-filter: blur(16px) saturate(140%);\n  backdrop-filter: blur(16px) saturate(140%);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);\n  overflow: hidden;\n  pointer-events: auto;\n  transition: width 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;\n}\n\n/* Compact pill on general sites (auto-expanded on study domains). */\n#qb-hud.qb-collapsed {\n  width: auto;\n  min-width: 0;\n  border-radius: 999px;\n}\n#qb-hud.qb-collapsed #qb-hud-body,\n#qb-hud.qb-collapsed #qb-actions {\n  display: none;\n}\n#qb-hud.qb-collapsed #qb-hud-header {\n  border-bottom: none;\n  padding: 8px 10px 8px 14px;\n}\n#qb-hud.qb-collapsed #qb-hud-title {\n  font-size: 12px;\n}\n#qb-hud.qb-collapsed #qb-status {\n  display: none;\n}\n\n#qb-hud-header {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 10px 12px;\n  background: linear-gradient(135deg, rgba(8, 32, 64, 0.92) 0%, rgba(26, 58, 92, 0.72) 100%);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  cursor: move;\n  user-select: none;\n  -webkit-user-select: none;\n}\n\n#qb-hud-title {\n  flex: 1;\n  min-width: 0;\n  font-weight: 600;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  letter-spacing: 0.2px;\n}\n\n#qb-status {\n  flex-shrink: 0;\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: rgba(22, 33, 62, 0.9);\n  color: #94a3b8;\n  white-space: nowrap;\n}\n\n#qb-status.running { color: #4ade80; }\n#qb-status.stopped { color: #f87171; }\n#qb-status.waiting { color: #fbbf24; }\n#qb-status.reviewing { color: #f5b74f; }\n\n#qb-minimize-btn {\n  flex-shrink: 0;\n  width: 28px;\n  height: 26px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(22, 33, 62, 0.9);\n  border: 1px solid rgba(255, 255, 255, 0.18);\n  border-radius: 8px;\n  color: #cbd5e0;\n  font-size: 14px;\n  font-weight: 700;\n  line-height: 1;\n  cursor: pointer;\n  padding: 0;\n}\n#qb-minimize-btn:hover { background: #2d3748; color: #ffffff; }\n#qb-minimize-btn:active { transform: scale(0.96); }\n\n#qb-hud-body {\n  padding: 8px 12px;\n  max-height: 190px;\n  overflow-y: auto;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 rgba(22, 33, 62, 0.4);\n}\n#qb-hud-body::-webkit-scrollbar { width: 4px; }\n#qb-hud-body::-webkit-scrollbar-track { background: rgba(22, 33, 62, 0.4); }\n#qb-hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n#qb-log {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-height: 34px;\n}\n\n/* Log rows: same classes as the Moodle HUD (see .hud-log-line below). */\n#qb-log .hud-log-line {\n  font-size: 11px;\n  line-height: 1.45;\n  padding: 2px 0;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n#qb-hud-hint {\n  padding: 0 12px 8px;\n  font-size: 10.5px;\n  color: #7f8c8d;\n  user-select: none;\n}\n\n#qb-actions {\n  display: flex;\n  gap: 6px;\n  padding: 8px 12px;\n  border-top: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(0, 0, 0, 0.16);\n}\n\n#qb-hud .qb-btn {\n  flex: 1;\n  min-width: 0;\n  border: none;\n  border-radius: 8px;\n  padding: 6px 8px;\n  font-family: inherit;\n  font-size: 11.5px;\n  font-weight: 600;\n  line-height: 1.3;\n  color: #ffffff;\n  cursor: pointer;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  transition: filter 0.15s ease, transform 0.1s ease;\n}\n#qb-hud .qb-btn:hover:not(:disabled) { filter: brightness(1.15); }\n#qb-hud .qb-btn:active:not(:disabled) { transform: translateY(1px); }\n#qb-hud .qb-btn:disabled { opacity: 0.45; cursor: not-allowed; }\n\n#qb-harvest-page { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); }\n#qb-harvest-course { background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); }\n#qb-stop { background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%); flex: 0 0 76px; }\n\n/* Wide/short viewports: keep the pill clear of the gaming/browser edges. */\n@media (max-width: 564px) {\n  #qb-hud {\n    right: 16px;\n    bottom: 168px;\n    width: calc(100vw - 32px);\n    max-width: calc(100vw - 32px);\n  }\n  #qb-hud.qb-collapsed {\n    width: auto;\n    max-width: calc(100vw - 32px);\n  }\n}\n";
 const QB_TM_LOCAL_PREFIX = 'qb_tm_local:';
 const QB_TM_SYNC_PREFIX = 'qb_tm_sync:';
@@ -335,8 +335,10 @@ async function qbTmMergeBank(remote) {
     const localEntry = value;
     const remoteHits = Array.isArray(remoteEntry) && Array.isArray(remoteEntry[1]) ? remoteEntry[1].slice()
       : remoteEntry == null ? [] : [remoteEntry];
-    const localHits = Array.isArray(localEntry) && Array.isArray(localEntry[1]) ? localEntry[1]
-      : localEntry == null ? [] : [localEntry];
+    const localHits = (Array.isArray(localEntry) && Array.isArray(localEntry[1]) ? localEntry[1]
+      : localEntry == null ? [] : [localEntry])
+      .filter((hit) => hit && hit.verified === true && typeof hit.answer === 'string' && hit.answer.trim());
+    if (!localHits.length) continue;
     const seen = new Set(remoteHits.map((hit) => qbTmBankSignature(hit, targetKey)));
     for (const hit of localHits) {
       const signature = qbTmBankSignature(hit, targetKey);
@@ -372,7 +374,9 @@ async function qbTmGitHubPut(settings, bank, sha) {
     timeout: 90000,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error('GitHub PUT failed: HTTP ' + response.status + ' ' + response.responseText.slice(0, 300));
+    const error = new Error('GitHub PUT failed: HTTP ' + response.status + ' ' + response.responseText.slice(0, 300));
+    error.status = response.status;
+    throw error;
   }
   return qbTmParseJson(response.responseText, 'GitHub Contents API');
 }
@@ -391,14 +395,26 @@ async function qbTmPullBank(settings) {
 async function qbTmSyncBank(payload) {
   const settings = await qbTmGitHubSettings(payload || {});
   if (!settings.owner || !settings.repo) return { status: 'skipped' };
-  const meta = await qbTmGitHubGetFile(settings);
-  const remote = meta.missing ? {} : meta.content;
+  let meta = await qbTmGitHubGetFile(settings);
+  let remote = meta.missing ? {} : meta.content;
   if (!meta.missing && !qbTmBankQuestions(remote)) throw new Error('Remote question bank is not a JSON object');
-  const questions = await qbTmMergeBank(remote);
-  const bank = remote && remote.questions && typeof remote.questions === 'object'
+  let questions = await qbTmMergeBank(remote);
+  let bank = remote && remote.questions && typeof remote.questions === 'object'
     ? { ...remote, questions, updatedAt: new Date().toISOString() }
     : questions;
-  await qbTmGitHubPut(settings, bank, meta.sha);
+  try {
+    await qbTmGitHubPut(settings, bank, meta.sha);
+  } catch (error) {
+    if (error.status !== 409 && error.status !== 422) throw error;
+    meta = await qbTmGitHubGetFile(settings);
+    remote = meta.missing ? {} : meta.content;
+    if (!meta.missing && !qbTmBankQuestions(remote)) throw new Error('Remote question bank is not a JSON object');
+    questions = await qbTmMergeBank(remote);
+    bank = remote && remote.questions && typeof remote.questions === 'object'
+      ? { ...remote, questions, updatedAt: new Date().toISOString() }
+      : questions;
+    await qbTmGitHubPut(settings, bank, meta.sha);
+  }
   const count = Object.keys(questions).filter((key) => !['questions', 'updatedAt', 'format', 'version', 'exportedAt'].includes(key)).length;
   return { status: 'ok', added: 0, pushed: count, questions: count };
 }
@@ -1172,7 +1188,7 @@ async function flushNow() {
   await doFlush();
 }
 // ── Answer key cache ────────────────────────────────────────────────────────
-async function answerKeyGet(key) {
+async function answerKeyGet(key, options = {}) {
   await ensureLoaded();
   key = normText(key);
   const entry = _answerKeyMem[key];
@@ -1190,7 +1206,16 @@ async function answerKeyGet(key) {
     scheduleFlush();
     return null;
   }
-  return entry[1]; // hits array
+  const wrong = (await getWrongAnswers(key)).map((answer) => normText(answer)).filter(Boolean);
+  const includeUnverified = options && options.includeUnverified === true;
+  return entry[1].filter((hit) => {
+    if (!hit || hit.wrong === true) return false;
+    if (!includeUnverified && hit.verified !== true) return false;
+    const answer = hitAnswerNorm(hit);
+    return !answer || !wrong.some((knownWrong) =>
+      answer === knownWrong || similarity(answer, knownWrong) >= 0.9
+    );
+  });
 }
 
 function hitAnswerNorm(hit) {
@@ -1315,7 +1340,7 @@ async function saveLocalAnswer(question, answer, course = 'learned-review') {
   const key = normText(question);
   const value = (answer || '').replace(/<[^>]+>/g, '').trim();
   if (!key || !value) return;
-  const hits = (await answerKeyGet(key)) || [];
+  const hits = (await answerKeyGet(key, { includeUnverified: true })) || [];
   const answerNorm = normText(value);
   if (!hits.some((hit) => hit && normText(hit.answer) === answerNorm)) {
     hits.push({
@@ -2288,9 +2313,9 @@ function _bestKeyHit(question,hits,minScore,options){
   return best&&bestQuestionScore>=minScore?best:best&&options&&_answerOptionScore(best.answer,options)>=0.95?best:null;
 }
 function _pickKeyAnswer(answer,options){const value=normText(answer);if(!value)return-1;if(BOOL_TRUE.has(value)||BOOL_FALSE.has(value)){const index=_boolIndex(options,BOOL_TRUE.has(value));if(index!==-1)return index;}let best=-1,score=0;for(let i=0;i<options.length;i++){const candidate=similarity(value,normText(options[i]));if(candidate>score){best=i;score=candidate;}}return score>=0.6?best:-1;}
-async function keyIndex(question,options,minScore){const hits=await _keyHits(question,options);const hit=_bestKeyHit(question,hits,minScore===undefined?cfg('ANSWER_KEY_MIN_SCORE'):minScore,options);if(!hit)return-1;const answer=normText(hit.answer);const wrong=await getWrongAnswers(question);if(wrong.some((item)=>answer===normText(item)||similarity(answer,normText(item))>=0.9))return-1;return _pickKeyAnswer(hit.answer,options);}
-async function keyAnswer(question){const hits=await _keyHits(question);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_TEXT_MIN_SCORE'));if(!hit)return'';const answer=_cleanTyped(hit.answer);const wrong=await getWrongAnswers(question);return wrong.some((item)=>normText(item)===normText(answer)||similarity(normText(item),normText(answer))>=0.9)?'':answer;}
-async function keyMatchAnswer(question){const hits=await _keyHits(question);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_MATCH_MIN_SCORE'));return hit?_cleanTyped(hit.answer):'';}
+async function keyIndex(question,options,minScore){const hits=(await _keyHits(question,options)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,minScore===undefined?cfg('ANSWER_KEY_MIN_SCORE'):minScore,options);if(!hit)return-1;const answer=normText(hit.answer);const wrong=await getWrongAnswers(question);if(wrong.some((item)=>answer===normText(item)||similarity(answer,normText(item))>=0.9))return-1;return _pickKeyAnswer(hit.answer,options);}
+async function keyAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_TEXT_MIN_SCORE'));if(!hit)return'';const answer=_cleanTyped(hit.answer);const wrong=await getWrongAnswers(question);return wrong.some((item)=>normText(item)===normText(answer)||similarity(normText(item),normText(answer))>=0.9)?'':answer;}
+async function keyMatchAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_MATCH_MIN_SCORE'));return hit?_cleanTyped(hit.answer):'';}
 async function hintText(question){const hits=await _keyHits(question);if(!_bestKeyHit(question,hits,0.35))return'';const lines=hits.slice(0,3).map((hit)=>'- '+(hit.question||'').slice(0,200)+'\n  KEY: '+(hit.answer||''));return'REFERENCE KEYS from amauoed.com (user-submitted, may be wrong — prefer them only if they fit the question):\n'+lines.join('\n');}
 function _interpretAnswer(raw,options,excluded){if(!raw)return-1;const t=raw.trim(),n=options.length,e=new Set(excluded||[]),el=[];for(let i=0;i<n;i++)if(!e.has(i))el.push(i);const ue=el.length?el:[...Array(n).keys()];const m=t.match(/\b(\d{1,2})\b/);if(m){const i=parseInt(m[1],10)-1;if(i>=0&&i<n&&ue.includes(i))return i;}let lm=t.match(/^\s*[\(\[\{]?\s*([A-Za-z])\s*[\)\]\.:\-]/);if(!lm)lm=t.match(/^\s*([A-Za-z])\s*$/);if(lm){const i=lm[1].toUpperCase().charCodeAt(0)-65;if(i>=0&&i<n&&ue.includes(i))return i;}const lw=t.toLowerCase();let b=-1,s=0;for(let i=0;i<n;i++){if(e.has(i))continue;const o=options[i].toLowerCase().trim();if(!o)continue;if(o===lw)return i;let sc=similarity(lw,o);if(o.includes(lw)||lw.includes(o))sc=Math.max(sc,0.85);if(sc>s){b=i;s=sc;}}return s>=0.6?b:-1;}async function askBoolClaim(q,o,ex){const p='Decide whether the statement below is TRUE or FALSE.\nJudge it on the standard definition.\n\nStatement: '+q+'\n\nReply with ONLY TRUE or FALSE.';if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const r=await postOpenRouter([{role:'user',content:p}],{maxTokens:64,temperature:0.1,timeout:25});if(r){const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();const v=_readBool(ra);if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}try{const r=await postOllama(p,{numPredict:16,temperature:0.1,timeout:30});if(r&&r.response){const v=_readBool(r.response.trim());if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}catch(e){}return-1;}
 async function _askGeminiPrompt(prompt,opts={}){const response=await postGemini([{role:'user',content:prompt}],opts);return response&&response.choices?.[0]?.message?.content||'';}
@@ -2311,6 +2336,76 @@ async function askOpenRouterVision(q,o,im){if(!(cfg('OPENROUTER_API_KEY')&&im.le
 async function askOllamaVision(q,o,im){if(!im.length)return -1;try{const r=await postOllama(_visionPrompt(q,o),{model:cfg('OLLAMA_VISION_MODEL')||cfg('OLLAMA_MODEL'),numPredict:40,temperature:0.1,images:im,timeout:45});if(r&&r.response){const raw=r.response.trim();const w=await getWrongAnswers(q);const ex=_wrongOptionIndices(o,w);return _interpretAnswer(raw,o,ex);}return -1;}catch(e){return -1;}}
 async function askVision(q,o,im){if(!(cfg('VISION_ENABLED')&&im.length))return -1;console.log('Vision');if(cfg('GEMINI_API_KEY')){const i=await askGeminiVision(q,o,im);if(i!==-1)return i;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const i=await askOpenRouterVision(q,o,im);if(i!==-1)return i;}const i=await askOllamaVision(q,o,im);if(i!==-1)return i;return -1;}
 function _multiPrompt(q,o,n,f){const ot=o.map((x,i)=>(i+1)+'. '+x).join('\n');let p='';if(f&&f.length)p+='Do NOT pick these, already wrong: '+[...f].sort().join(', ')+'\n\n';if(n)p+=n+'\n\n';return p+'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY numbers separated by commas.';}
+function _parsePartialMultiSelectCombo(value){
+  const marker=normText(value);
+  const prefix='multiselect partial combo ';
+  if(!marker.startsWith(prefix))return null;
+  let rest=marker.slice(prefix.length),choices=[];
+  while(rest){
+    const lengthMatch=rest.match(/^(\d+)\s/);
+    if(!lengthMatch)return null;
+    const length=Number(lengthMatch[1]),start=lengthMatch[0].length;
+    if(!Number.isSafeInteger(length)||length<1||start+length>rest.length)return null;
+    choices.push(rest.slice(start,start+length));
+    rest=rest.slice(start+length).trim();
+  }
+  return choices.sort();
+}
+function _parseMultiSelectResponse(raw,options,wrongOptions,partialCombos){
+  const text=String(raw||'');
+  const start=text.indexOf('['),end=text.lastIndexOf(']');
+  if(start<0||end<start)return[];
+  let parsed;
+  try{parsed=JSON.parse(text.slice(start,end+1));}catch(error){return[];}
+  if(!Array.isArray(parsed))return[];
+  const wrong=(wrongOptions||[]).map((value)=>normText(value)).filter(Boolean);
+  const indexes=[];
+  for(const value of parsed){
+    if(typeof value!=='string')continue;
+    const answer=normText(value);
+    if(!answer||wrong.some((item)=>item===answer||similarity(item,answer)>=0.9))continue;
+    const index=options.findIndex((option)=>normText(option)===answer);
+    if(index!==-1&&!indexes.includes(index))indexes.push(index);
+  }
+  const selection=indexes.map((index)=>normText(options[index])).sort();
+  if((partialCombos||[]).some((combo)=>combo.length===selection.length&&combo.every((choice,index)=>choice===selection[index])))return[];
+  return indexes;
+}
+async function askAiMultiSelect(question,options){
+  const wrong=await getWrongAnswers(question);
+  const partial=wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
+  const wrongOptions=wrong.filter((value)=>!normText(value).startsWith('multiselect partial '));
+  const prompt="This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: "+question+"\n\nOptions:\n"+options.map((option)=>'- '+option).join('\n');
+  const context=[];
+  if(partial.length)context.push('Previously recorded partial selections (do not repeat an exact combination): '+partial.map((combo)=>'['+combo.join(', ')+']').join('; ')+'.');
+  if(wrongOptions.length)context.push('Options already confirmed wrong: '+wrongOptions.join(', ')+'.');
+  const requestPrompt=context.length?prompt+'\n\n'+context.join('\n'):prompt;
+  const parse=(raw)=>_parseMultiSelectResponse(raw,options,wrongOptions,partial);
+  if(cfg('CUSTOM_API_KEY')&&!customCooling()){
+    try{
+      const response=await postCustomApi([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
+      const raw=response&&response.choices&&response.choices[0]&&response.choices[0].message
+        ?response.choices[0].message.content||response.choices[0].message.reasoning||'':'';
+      const picks=parse(raw);if(picks.length)return picks;
+    }catch(error){_recordProviderFailure('FreeLLMAPI',error.status,error.message);}
+  }
+  if(cfg('GEMINI_API_KEY')){
+    try{const picks=parse(await _askGeminiPrompt(requestPrompt,{maxTokens:220,temperature:0.1,timeout:30}));if(picks.length)return picks;}
+    catch(error){_recordProviderFailure('Gemini',error.status,error.message);}
+  }
+  if(cfg('OPENROUTER_API_KEY')&&!orCooling()){
+    try{
+      const response=await postOpenRouter([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
+      const message=response&&response.choices&&response.choices[0]&&response.choices[0].message||{};
+      const picks=parse(message.content||message.reasoning||'');if(picks.length)return picks;
+    }catch(error){_recordProviderFailure('OpenRouter',error.status,error.message);}
+  }
+  try{
+    const response=await postOllama(requestPrompt,{numPredict:220,temperature:0.1,timeout:45});
+    const picks=parse(response&&response.response||'');if(picks.length)return picks;
+  }catch(error){_recordProviderFailure('Ollama',error.status,error.message);}
+  return[];
+}
 async function askOpenRouterMulti(q,o,ex,n){if(!cfg('OPENROUTER_API_KEY')||orCooling())return[];const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOpenRouter([{role:'user',content:_multiPrompt(q,o,n,f)}],{maxTokens:64,temperature:0.2,timeout:25});if(!r)return[];const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}catch(e){return[];}}
 async function askOpenRouterWebMulti(q,o,ex){if(!cfg('OPENROUTER_API_KEY')||_orWebDisabled||orCooling())return[];const excluded=(ex||[]).map((index)=>o[index]).filter(Boolean);const prompt=_multiPrompt(q,o,'Use web search results to select the correct options.',excluded);const response=await postOpenRouter([{role:'user',content:prompt}],{plugins:[{id:'web',engine:'exa',max_results:cfg('WEB_SEARCH_MAX_RESULTS'),search_prompt:'Exact question and answers.'}],maxTokens:100,temperature:0.1,timeout:45});if(!response)return[];const message=response.choices?.[0]?.message||{};const first=((message.content||message.reasoning||'').trim().split('\n')[0]||'');return _interpretMulti(first,o,ex);}
 async function askOllamaMulti(q,o,ex,n){const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOllama(_multiPrompt(q,o,n,f),{numPredict:48,temperature:0.1,timeout:45});if(r&&r.response){const ra=r.response.trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}return[];}catch(e){return[];}}
@@ -2327,7 +2422,7 @@ async function askWebMulti(q,o,ex){
     }).map(({index})=>index).filter((index)=>!(ex||[]).includes(index));
   }catch(error){console.warn('[providers] Non-AI multi-answer search failed:',error.message);return[];}
 }
-async function askAiMulti(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.filter((match)=>!isWrong(o[match.index]));if(localOk.length)return localOk.map((match)=>match.index);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push(i);}if(!vp.length)for(let i=0;i<o.length;i++)vp.push(i);const fo=vp.map(i=>o[i]);const kp=[];if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,0.72);if(ki!==-1)kp.push(ki);const e=await keyAnswer(q);if(e){for(const i of _interpretMulti(e,fo))if(!kp.includes(i))kp.push(i);}}if(cfg('WEB_SEARCH_ENABLED')){const wp=await askWebMulti(q,fo);if(wp.length)return wp.map(p=>vp[p]).filter(p=>p<vp.length);}let nt='';if(kp.length)nt='Key suggests '+kp.map(p=>String(p+1)).join(', ')+'.';const exNote=_excludedNote(w);if(exNote)nt=(nt?nt+' ':'')+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const picks=await askCustomApiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('GEMINI_API_KEY')){const picks=await askGeminiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const webPicks=await askOpenRouterWebMulti(q,fo);if(webPicks.length)return webPicks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const pk=await askOpenRouterMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}try{const pk=await askOllamaMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}catch(e){}if(kp.length)return kp.map(p=>vp[p]).filter(p=>p<vp.length);return[];}
+async function askAiMulti(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.filter((match)=>match.verified===true&&!isWrong(o[match.index]));if(localOk.length)return localOk.map((match)=>match.index);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push(i);}if(!vp.length)for(let i=0;i<o.length;i++)vp.push(i);const fo=vp.map(i=>o[i]);const kp=[];if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,0.72);if(ki!==-1)kp.push(ki);const e=await keyAnswer(q);if(e){for(const i of _interpretMulti(e,fo))if(!kp.includes(i))kp.push(i);}}if(cfg('WEB_SEARCH_ENABLED')){const wp=await askWebMulti(q,fo);if(wp.length)return wp.map(p=>vp[p]).filter(p=>p<vp.length);}let nt='';if(kp.length)nt='Key suggests '+kp.map(p=>String(p+1)).join(', ')+'.';const exNote=_excludedNote(w);if(exNote)nt=(nt?nt+' ':'')+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const picks=await askCustomApiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('GEMINI_API_KEY')){const picks=await askGeminiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const webPicks=await askOpenRouterWebMulti(q,fo);if(webPicks.length)return webPicks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const pk=await askOpenRouterMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}try{const pk=await askOllamaMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}catch(e){}if(kp.length)return kp.map(p=>vp[p]).filter(p=>p<vp.length);return[];}
 async function askWeb(q,o,oi){
   if(!cfg('WEB_SEARCH_ENABLED'))return-1;
   try{
@@ -2344,6 +2439,7 @@ async function askWeb(q,o,oi){
 }
 function _textPrompt(q,f,v,n,force,courseContext){
   const hasBlank=BLANK_RE.test(q);
+  const asksAcronym=/\b(?:abbreviation|acronym)\b/i.test(q||'');
   let prompt='';
   const exNote=_excludedNote(f);
   if(exNote)prompt+=exNote+' ';
@@ -2351,11 +2447,23 @@ function _textPrompt(q,f,v,n,force,courseContext){
   if(v)prompt+=RETRY_VARIANTS[Math.min(v,RETRY_VARIANTS.length-1)]+'\n\n';
   if(n)prompt=n+'\n\n'+prompt;
   const blankRules=hasBlank
-    ? '\nTHE QUESTION HAS A ______ BLANK.\nReturn ONLY the exact missing word or shortest correct phrase. Do not write a full sentence, quotation marks, or an explanation.\n'
-    : '\nReturn ONLY the exact answer word or short phrase (1-5 words). Never write sentences or explanations.\n';
+    ? '\nTHE QUESTION HAS A ______ BLANK.\nReturn ONLY the exact concise missing module term (1-3 words). Do not write a full sentence, quotation marks, labels, explanations, or thinking preambles.\n'
+    : '\nReturn ONLY the exact concise module term (1-3 words). Never write sentences, labels, explanations, or thinking preambles.\n';
+  const acronymRule=asksAcronym
+    ? '\nThe question asks for an abbreviation or acronym: output ONLY the uppercase acronym (for example CPU, IDS, or OSI).\n'
+    : '';
+  const termRule='\nDo not append filler words such as "Attack" or "Data" unless they are specifically part of the exact term. Examples: "Buffer Overflow", "Phishing", "Integrity", "Software".\n';
   const unknownRule=force?'- NONE is not allowed.\n':'- If unknown, reply NONE\n';
   const contextLine = courseContext ? '\nCourse/Subject: '+courseContext+'\n' : '';
-  return prompt+'You are an expert tutor.\n'+_domainNote(q)+contextLine+'\n'+unknownRule+blankRules+'Question: '+q+'\n\nReply with ONLY the exact answer.';
+  return prompt+'You are an expert tutor.\n'+_domainNote(q)+contextLine+'\n'+unknownRule+blankRules+acronymRule+termRule+'Question: '+q+'\n\nReply with ONLY the exact answer.';
+}
+function _conciseTextAnswer(answer,question){
+  const value=String(answer||'').trim();
+  if(!value)return'';
+  if(/\b(?:abbreviation|acronym)\b/i.test(question||'')){
+    return /^[A-Za-z0-9][A-Za-z0-9./+-]*$/.test(value)?value.toUpperCase():'';
+  }
+  return value.split(/\s+/).length<=3?value:'';
 }
 async function askOpenRouterText(q,bl,f,t,v,n,force,courseContext){if(!cfg('OPENROUTER_API_KEY')||orCooling())return'';try{const r=await postOpenRouter([{role:'user',content:_textPrompt(q,f,v,n,force,courseContext)}],{maxTokens:80,temperature:t??0.1,timeout:25,quiet:true});if(!r)return'';const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();return _cleanTyped(ra,bl);}catch(e){_recordProviderFailure('OpenRouter',e.status,e.message);return'';}}
 async function askOllamaText(q,bl,f,t,v,n,force,courseContext){try{const r=await postOllama(_textPrompt(q,f,v,n,force,courseContext),{numPredict:60,temperature:t??0.1,timeout:35,quiet:true});if(r&&r.response)return _cleanTyped(r.response.trim(),bl);return'';}catch(e){_recordProviderFailure('Ollama',e.status,e.message);return'';}}
@@ -2376,7 +2484,7 @@ async function askAiText(q){
   const b=new Set(w.map(x=>normText(x)));
   const local=await localBankAnswerHits(q);
   if(local&&local.length){
-    const ok=local.find((hit)=>!b.has(normText(hit.answer)));
+    const ok=local.find((hit)=>hit.verified===true&&!b.has(normText(hit.answer)));
     if(ok)return _cleanTyped(ok.answer,bl);
   }
   const chq=(q||'').replace(/[_\-]{2,}/g,' ').replace(/\s+/g,' ').trim();
@@ -2387,7 +2495,7 @@ async function askAiText(q){
   if(cfg('ANSWER_KEY_ENABLED')){const ka=await keyAnswer(chq);if(ka&&!b.has(normText(ka)))return ka;}
   if(cfg('WEB_SEARCH_ENABLED')){const results=await askWebText(q);if(results)q+='\n\nNon-AI web search snippets (reference only):\n'+results.slice(0,2000);}
   const snippets=await snippetLookup;
-  if(snippets)q+='\n\nReference search snippets:\n'+snippets+'\n\nBased on the question and reference snippets above, reply ONLY with the exact short answer (1-5 words).';
+  if(snippets)q+='\n\nReference search snippets:\n'+snippets+'\n\nBased on the question and reference snippets above, reply ONLY with the exact concise module term (1-3 words), with no explanation.';
 
   if(cfg('ANSWER_KEY_ENABLED')){const h=await hintText(chq);if(h)q+='\n\n'+h;}
 
@@ -2398,8 +2506,13 @@ async function askAiText(q){
     for(let r=0;r<cfg('MAX_TEXT_RETRIES');r++){
       const v=Math.min(ep+r,RETRY_VARIANTS.length-1);
       const temps=[0.1,0.5,0.75,0.95];
-      const a=await fn(q,bl,b.size?[...b]:null,temps[r%4],v,nt,false,courseContext);
+      let a=await fn(q,bl,b.size?[...b]:null,temps[r%4],v,nt,false,courseContext);
       if(!a)continue;
+      a=_conciseTextAnswer(a,q);
+      if(!a){
+        if(typeof logHUD==='function')logHUD('warn',name+': rejected answer outside the concise 1-3 word format');
+        continue;
+      }
       if(isConversationalFiller(a) || a.length > 60){
         if(typeof logHUD==='function') logHUD('warn', name+': rejected conversational/long answer ('+a.length+' chars): '+a.slice(0,80));
         continue;
@@ -2446,7 +2559,7 @@ async function askAiText(q){
   answer=await askTextProvider('Gemini','GEMINI_API_KEY',askGeminiText);if(answer)return answer;
   answer=await askTextProvider('OpenRouter','OPENROUTER_API_KEY',askOpenRouterText);if(answer)return answer;
   answer=await askTextProvider('Ollama','',askOllamaText);if(answer)return answer;
-  try{const f=await askOllamaText(q,bl,b.size?[...b]:null,0.3,RETRY_VARIANTS.length-1,nt,true,courseContext);if(f&&!b.has(normText(f))&&!isConversationalFiller(f)&&f.length<=60)return f;}catch(e){}
+  try{const f=_conciseTextAnswer(await askOllamaText(q,bl,b.size?[...b]:null,0.3,RETRY_VARIANTS.length-1,nt,true,courseContext),q);if(f&&!b.has(normText(f))&&!isConversationalFiller(f)&&f.length<=60)return f;}catch(e){}
   if(cfg('TYPE_ON_FAILURE')&&lg&&!b.has(normText(lg))&&!isConversationalFiller(lg)&&lg.length<=60)return lg;
   return '';
 }
@@ -4237,7 +4350,8 @@ async function learnFromReviewRoot(root, learned) {
 
     // 6) Two-option / True-False: when the attempt was wrong (earned === 0), the
     //    opposite (unselected) option is the correct answer — save it as verified.
-    if (grade && grade.earned === 0 && !evidence.right.length) {
+    if (grade && grade.earned === 0 && !evidence.right.length
+        && !c.querySelector('input[type="checkbox"]')) {
       const optionInputs = Array.from(c.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
         .filter((input) => input.value !== '-1');
       const optionTexts = [];
@@ -4261,11 +4375,72 @@ async function learnFromReviewRoot(root, learned) {
       }
     }
 
+    const checkboxInputs = Array.from(c.querySelectorAll('input[type="checkbox"]'))
+      .filter((input) => input.value !== '-1');
+    const partialCheckbox = checkboxInputs.length > 0 && grade
+      && grade.earned > 0 && grade.max > grade.earned;
+    if (partialCheckbox) {
+      const allChoices = [];
+      const addChoice = (value) => {
+        const text = normalizeReviewText(value);
+        if (text && !allChoices.some((choice) => normText(choice) === normText(text))) allChoices.push(text);
+      };
+      checkboxInputs.forEach((input) => addChoice(reviewAnswerText(input)));
+      const checkedChoices = [];
+      for (const input of checkboxInputs.filter((item) => item.checked)) {
+        const text = normalizeReviewText(reviewAnswerText(input));
+        if (text && !checkedChoices.some((choice) => normText(choice) === normText(text))) checkedChoices.push(text);
+      }
+      const markedCorrect = checkboxInputs
+        .filter((input) => input.checked && evidence.optionOutcome(input) === 'right')
+        .map((input) => normalizeReviewText(reviewAnswerText(input)))
+        .filter(Boolean);
+      const markedUnique = markedCorrect.filter((answer, index, list) =>
+        list.findIndex((other) => normText(other) === normText(answer)) === index
+      );
+      const reviewText = normalizeReviewText(c.innerText || c.textContent || '');
+      const correctCountMatch = reviewText.match(/you have correctly selected\s+(\d+)/i);
+      const correctlySelected = correctCountMatch
+        ? Number(correctCountMatch[1])
+        : markedUnique.length;
+      const expectedTotal = correctlySelected > 0
+        ? Math.round(correctlySelected * (grade.max / grade.earned))
+        : 0;
+      const selectedCorrect = correctCountMatch
+        ? (markedUnique.length >= correctlySelected
+          ? markedUnique.slice(0, correctlySelected)
+          : checkedChoices.length === correctlySelected ? checkedChoices : [])
+        : markedUnique;
+
+      evidence.right.splice(0, evidence.right.length);
+      if (expectedTotal > 0 && expectedTotal === checkboxInputs.length) {
+        allChoices.forEach((choice) => evidence.add(evidence.right, choice));
+        evidence.wrong.splice(0, evidence.wrong.length);
+        logHUD('info', 'Partial-credit deduction: all ' + checkboxInputs.length + ' checkbox options are correct');
+      } else {
+        selectedCorrect.forEach((choice) => evidence.add(evidence.right, choice));
+        const correctKeys = new Set(evidence.right.map((answer) => normText(answer)));
+        for (let index = evidence.wrong.length - 1; index >= 0; index -= 1) {
+          if (correctKeys.has(normText(evidence.wrong[index]))) evidence.wrong.splice(index, 1);
+        }
+        if (checkedChoices.length) {
+          try {
+            const signature = checkedChoices.map(normText).filter(Boolean).sort()
+              .map((choice) => choice.length + ' ' + choice).join(' ');
+            await wrongSet(qText, 'MULTISELECT PARTIAL COMBO ' + signature);
+            stats.wrong += 1;
+          } catch (error) {
+            logHUD('warn', 'Could not record partial checkbox selection: ' + error.message);
+          }
+        }
+      }
+    }
+
     // Save with `{ verified: true, replaceVerified: true }`: a single-answer
     // question retires stale verified hits for its prompt, while a multi-select
     // question (2+ correct options) keeps every option so the next attempt can
     // tick them all.
-    const replaceVerified = evidence.right.length === 1;
+    const replaceVerified = checkboxInputs.length === 0 && evidence.right.length === 1;
     for (const answer of evidence.right) {
       try {
         const existing = await answerKeyGet(qText);
@@ -4349,7 +4524,19 @@ function syncGitHubBankNow() {
   });
 }
 
+let _reviewScanInFlight = false;
+
 async function doReviewScan() {
+  if (_reviewScanInFlight) return null;
+  _reviewScanInFlight = true;
+  try {
+    return await doReviewScanUnlocked();
+  } finally {
+    _reviewScanInFlight = false;
+  }
+}
+
+async function doReviewScanUnlocked() {
   const learned = { right: 0, wrong: 0, matching: 0, deduced: 0, new: 0 };
   logHUD('info', 'Review scan: checking all answers...');
 
@@ -4874,7 +5061,9 @@ async function submitAttempt() {
 // Build a predicate that flags options matching a stored (known-wrong) answer.
 async function buildWrongOptionFilter(qText, options) {
   const wrong = await getWrongAnswers(qText);
-  const set = new Set((wrong || []).map((w) => normText(w)).filter(Boolean));
+  const set = new Set((wrong || [])
+    .map((w) => normText(w))
+    .filter((value) => value && !value.startsWith('multiselect partial ')));
   return (option) => {
     const on = normText(option);
     if (!on) return false;
@@ -5015,18 +5204,20 @@ async function handleQuestion(data) {
 
   if (kind === 'check') {
     const isWrong = await buildWrongOptionFilter(text, options);
-    const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
+    const previousWrong = await getWrongAnswers(text);
+    const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong)
+      .filter((match) => match.verified === true);
     if (runCancelled()) return false; // Stop / Run / Disable while we were thinking
-    if (localMatches.length) {
+    if (localMatches.length >= 2 && !previousWrong.length) {
       for (const match of localMatches) {
         if (runCancelled()) return false;
         const element = elements[match.index];
         if (element && !element.checked) element.click();
-        logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
+        logHUD('info', 'Tier 1 (Verified Bank): ' + match.option);
       }
       return true;
     }
-    let picks = await askAiMulti(text, options, images);
+    let picks = await askAiMultiSelect(text, options);
     if (runCancelled()) return false;
     picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {
@@ -5672,7 +5863,7 @@ async function flushNow() {
   await doFlush();
 }
 // ── Answer key cache ────────────────────────────────────────────────────────
-async function answerKeyGet(key) {
+async function answerKeyGet(key, options = {}) {
   await ensureLoaded();
   key = normText(key);
   const entry = _answerKeyMem[key];
@@ -5690,7 +5881,16 @@ async function answerKeyGet(key) {
     scheduleFlush();
     return null;
   }
-  return entry[1]; // hits array
+  const wrong = (await getWrongAnswers(key)).map((answer) => normText(answer)).filter(Boolean);
+  const includeUnverified = options && options.includeUnverified === true;
+  return entry[1].filter((hit) => {
+    if (!hit || hit.wrong === true) return false;
+    if (!includeUnverified && hit.verified !== true) return false;
+    const answer = hitAnswerNorm(hit);
+    return !answer || !wrong.some((knownWrong) =>
+      answer === knownWrong || similarity(answer, knownWrong) >= 0.9
+    );
+  });
 }
 
 function hitAnswerNorm(hit) {
@@ -5815,7 +6015,7 @@ async function saveLocalAnswer(question, answer, course = 'learned-review') {
   const key = normText(question);
   const value = (answer || '').replace(/<[^>]+>/g, '').trim();
   if (!key || !value) return;
-  const hits = (await answerKeyGet(key)) || [];
+  const hits = (await answerKeyGet(key, { includeUnverified: true })) || [];
   const answerNorm = normText(value);
   if (!hits.some((hit) => hit && normText(hit.answer) === answerNorm)) {
     hits.push({

@@ -354,8 +354,10 @@ async function qbTmMergeBank(remote) {
     const localEntry = value;
     const remoteHits = Array.isArray(remoteEntry) && Array.isArray(remoteEntry[1]) ? remoteEntry[1].slice()
       : remoteEntry == null ? [] : [remoteEntry];
-    const localHits = Array.isArray(localEntry) && Array.isArray(localEntry[1]) ? localEntry[1]
-      : localEntry == null ? [] : [localEntry];
+    const localHits = (Array.isArray(localEntry) && Array.isArray(localEntry[1]) ? localEntry[1]
+      : localEntry == null ? [] : [localEntry])
+      .filter((hit) => hit && hit.verified === true && typeof hit.answer === 'string' && hit.answer.trim());
+    if (!localHits.length) continue;
     const seen = new Set(remoteHits.map((hit) => qbTmBankSignature(hit, targetKey)));
     for (const hit of localHits) {
       const signature = qbTmBankSignature(hit, targetKey);
@@ -391,7 +393,9 @@ async function qbTmGitHubPut(settings, bank, sha) {
     timeout: 90000,
   });
   if (response.status < 200 || response.status >= 300) {
-    throw new Error('GitHub PUT failed: HTTP ' + response.status + ' ' + response.responseText.slice(0, 300));
+    const error = new Error('GitHub PUT failed: HTTP ' + response.status + ' ' + response.responseText.slice(0, 300));
+    error.status = response.status;
+    throw error;
   }
   return qbTmParseJson(response.responseText, 'GitHub Contents API');
 }
@@ -410,14 +414,26 @@ async function qbTmPullBank(settings) {
 async function qbTmSyncBank(payload) {
   const settings = await qbTmGitHubSettings(payload || {});
   if (!settings.owner || !settings.repo) return { status: 'skipped' };
-  const meta = await qbTmGitHubGetFile(settings);
-  const remote = meta.missing ? {} : meta.content;
+  let meta = await qbTmGitHubGetFile(settings);
+  let remote = meta.missing ? {} : meta.content;
   if (!meta.missing && !qbTmBankQuestions(remote)) throw new Error('Remote question bank is not a JSON object');
-  const questions = await qbTmMergeBank(remote);
-  const bank = remote && remote.questions && typeof remote.questions === 'object'
+  let questions = await qbTmMergeBank(remote);
+  let bank = remote && remote.questions && typeof remote.questions === 'object'
     ? { ...remote, questions, updatedAt: new Date().toISOString() }
     : questions;
-  await qbTmGitHubPut(settings, bank, meta.sha);
+  try {
+    await qbTmGitHubPut(settings, bank, meta.sha);
+  } catch (error) {
+    if (error.status !== 409 && error.status !== 422) throw error;
+    meta = await qbTmGitHubGetFile(settings);
+    remote = meta.missing ? {} : meta.content;
+    if (!meta.missing && !qbTmBankQuestions(remote)) throw new Error('Remote question bank is not a JSON object');
+    questions = await qbTmMergeBank(remote);
+    bank = remote && remote.questions && typeof remote.questions === 'object'
+      ? { ...remote, questions, updatedAt: new Date().toISOString() }
+      : questions;
+    await qbTmGitHubPut(settings, bank, meta.sha);
+  }
   const count = Object.keys(questions).filter((key) => !['questions', 'updatedAt', 'format', 'version', 'exportedAt'].includes(key)).length;
   return { status: 'ok', added: 0, pushed: count, questions: count };
 }

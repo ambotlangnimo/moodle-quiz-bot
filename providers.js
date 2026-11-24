@@ -387,9 +387,9 @@ function _bestKeyHit(question,hits,minScore,options){
   return best&&bestQuestionScore>=minScore?best:best&&options&&_answerOptionScore(best.answer,options)>=0.95?best:null;
 }
 function _pickKeyAnswer(answer,options){const value=normText(answer);if(!value)return-1;if(BOOL_TRUE.has(value)||BOOL_FALSE.has(value)){const index=_boolIndex(options,BOOL_TRUE.has(value));if(index!==-1)return index;}let best=-1,score=0;for(let i=0;i<options.length;i++){const candidate=similarity(value,normText(options[i]));if(candidate>score){best=i;score=candidate;}}return score>=0.6?best:-1;}
-async function keyIndex(question,options,minScore){const hits=await _keyHits(question,options);const hit=_bestKeyHit(question,hits,minScore===undefined?cfg('ANSWER_KEY_MIN_SCORE'):minScore,options);if(!hit)return-1;const answer=normText(hit.answer);const wrong=await getWrongAnswers(question);if(wrong.some((item)=>answer===normText(item)||similarity(answer,normText(item))>=0.9))return-1;return _pickKeyAnswer(hit.answer,options);}
-async function keyAnswer(question){const hits=await _keyHits(question);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_TEXT_MIN_SCORE'));if(!hit)return'';const answer=_cleanTyped(hit.answer);const wrong=await getWrongAnswers(question);return wrong.some((item)=>normText(item)===normText(answer)||similarity(normText(item),normText(answer))>=0.9)?'':answer;}
-async function keyMatchAnswer(question){const hits=await _keyHits(question);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_MATCH_MIN_SCORE'));return hit?_cleanTyped(hit.answer):'';}
+async function keyIndex(question,options,minScore){const hits=(await _keyHits(question,options)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,minScore===undefined?cfg('ANSWER_KEY_MIN_SCORE'):minScore,options);if(!hit)return-1;const answer=normText(hit.answer);const wrong=await getWrongAnswers(question);if(wrong.some((item)=>answer===normText(item)||similarity(answer,normText(item))>=0.9))return-1;return _pickKeyAnswer(hit.answer,options);}
+async function keyAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_TEXT_MIN_SCORE'));if(!hit)return'';const answer=_cleanTyped(hit.answer);const wrong=await getWrongAnswers(question);return wrong.some((item)=>normText(item)===normText(answer)||similarity(normText(item),normText(answer))>=0.9)?'':answer;}
+async function keyMatchAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_MATCH_MIN_SCORE'));return hit?_cleanTyped(hit.answer):'';}
 async function hintText(question){const hits=await _keyHits(question);if(!_bestKeyHit(question,hits,0.35))return'';const lines=hits.slice(0,3).map((hit)=>'- '+(hit.question||'').slice(0,200)+'\n  KEY: '+(hit.answer||''));return'REFERENCE KEYS from amauoed.com (user-submitted, may be wrong — prefer them only if they fit the question):\n'+lines.join('\n');}
 function _interpretAnswer(raw,options,excluded){if(!raw)return-1;const t=raw.trim(),n=options.length,e=new Set(excluded||[]),el=[];for(let i=0;i<n;i++)if(!e.has(i))el.push(i);const ue=el.length?el:[...Array(n).keys()];const m=t.match(/\b(\d{1,2})\b/);if(m){const i=parseInt(m[1],10)-1;if(i>=0&&i<n&&ue.includes(i))return i;}let lm=t.match(/^\s*[\(\[\{]?\s*([A-Za-z])\s*[\)\]\.:\-]/);if(!lm)lm=t.match(/^\s*([A-Za-z])\s*$/);if(lm){const i=lm[1].toUpperCase().charCodeAt(0)-65;if(i>=0&&i<n&&ue.includes(i))return i;}const lw=t.toLowerCase();let b=-1,s=0;for(let i=0;i<n;i++){if(e.has(i))continue;const o=options[i].toLowerCase().trim();if(!o)continue;if(o===lw)return i;let sc=similarity(lw,o);if(o.includes(lw)||lw.includes(o))sc=Math.max(sc,0.85);if(sc>s){b=i;s=sc;}}return s>=0.6?b:-1;}async function askBoolClaim(q,o,ex){const p='Decide whether the statement below is TRUE or FALSE.\nJudge it on the standard definition.\n\nStatement: '+q+'\n\nReply with ONLY TRUE or FALSE.';if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const r=await postOpenRouter([{role:'user',content:p}],{maxTokens:64,temperature:0.1,timeout:25});if(r){const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();const v=_readBool(ra);if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}try{const r=await postOllama(p,{numPredict:16,temperature:0.1,timeout:30});if(r&&r.response){const v=_readBool(r.response.trim());if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}catch(e){}return-1;}
 async function _askGeminiPrompt(prompt,opts={}){const response=await postGemini([{role:'user',content:prompt}],opts);return response&&response.choices?.[0]?.message?.content||'';}
@@ -410,6 +410,76 @@ async function askOpenRouterVision(q,o,im){if(!(cfg('OPENROUTER_API_KEY')&&im.le
 async function askOllamaVision(q,o,im){if(!im.length)return -1;try{const r=await postOllama(_visionPrompt(q,o),{model:cfg('OLLAMA_VISION_MODEL')||cfg('OLLAMA_MODEL'),numPredict:40,temperature:0.1,images:im,timeout:45});if(r&&r.response){const raw=r.response.trim();const w=await getWrongAnswers(q);const ex=_wrongOptionIndices(o,w);return _interpretAnswer(raw,o,ex);}return -1;}catch(e){return -1;}}
 async function askVision(q,o,im){if(!(cfg('VISION_ENABLED')&&im.length))return -1;console.log('Vision');if(cfg('GEMINI_API_KEY')){const i=await askGeminiVision(q,o,im);if(i!==-1)return i;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const i=await askOpenRouterVision(q,o,im);if(i!==-1)return i;}const i=await askOllamaVision(q,o,im);if(i!==-1)return i;return -1;}
 function _multiPrompt(q,o,n,f){const ot=o.map((x,i)=>(i+1)+'. '+x).join('\n');let p='';if(f&&f.length)p+='Do NOT pick these, already wrong: '+[...f].sort().join(', ')+'\n\n';if(n)p+=n+'\n\n';return p+'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY numbers separated by commas.';}
+function _parsePartialMultiSelectCombo(value){
+  const marker=normText(value);
+  const prefix='multiselect partial combo ';
+  if(!marker.startsWith(prefix))return null;
+  let rest=marker.slice(prefix.length),choices=[];
+  while(rest){
+    const lengthMatch=rest.match(/^(\d+)\s/);
+    if(!lengthMatch)return null;
+    const length=Number(lengthMatch[1]),start=lengthMatch[0].length;
+    if(!Number.isSafeInteger(length)||length<1||start+length>rest.length)return null;
+    choices.push(rest.slice(start,start+length));
+    rest=rest.slice(start+length).trim();
+  }
+  return choices.sort();
+}
+function _parseMultiSelectResponse(raw,options,wrongOptions,partialCombos){
+  const text=String(raw||'');
+  const start=text.indexOf('['),end=text.lastIndexOf(']');
+  if(start<0||end<start)return[];
+  let parsed;
+  try{parsed=JSON.parse(text.slice(start,end+1));}catch(error){return[];}
+  if(!Array.isArray(parsed))return[];
+  const wrong=(wrongOptions||[]).map((value)=>normText(value)).filter(Boolean);
+  const indexes=[];
+  for(const value of parsed){
+    if(typeof value!=='string')continue;
+    const answer=normText(value);
+    if(!answer||wrong.some((item)=>item===answer||similarity(item,answer)>=0.9))continue;
+    const index=options.findIndex((option)=>normText(option)===answer);
+    if(index!==-1&&!indexes.includes(index))indexes.push(index);
+  }
+  const selection=indexes.map((index)=>normText(options[index])).sort();
+  if((partialCombos||[]).some((combo)=>combo.length===selection.length&&combo.every((choice,index)=>choice===selection[index])))return[];
+  return indexes;
+}
+async function askAiMultiSelect(question,options){
+  const wrong=await getWrongAnswers(question);
+  const partial=wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
+  const wrongOptions=wrong.filter((value)=>!normText(value).startsWith('multiselect partial '));
+  const prompt="This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: "+question+"\n\nOptions:\n"+options.map((option)=>'- '+option).join('\n');
+  const context=[];
+  if(partial.length)context.push('Previously recorded partial selections (do not repeat an exact combination): '+partial.map((combo)=>'['+combo.join(', ')+']').join('; ')+'.');
+  if(wrongOptions.length)context.push('Options already confirmed wrong: '+wrongOptions.join(', ')+'.');
+  const requestPrompt=context.length?prompt+'\n\n'+context.join('\n'):prompt;
+  const parse=(raw)=>_parseMultiSelectResponse(raw,options,wrongOptions,partial);
+  if(cfg('CUSTOM_API_KEY')&&!customCooling()){
+    try{
+      const response=await postCustomApi([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
+      const raw=response&&response.choices&&response.choices[0]&&response.choices[0].message
+        ?response.choices[0].message.content||response.choices[0].message.reasoning||'':'';
+      const picks=parse(raw);if(picks.length)return picks;
+    }catch(error){_recordProviderFailure('FreeLLMAPI',error.status,error.message);}
+  }
+  if(cfg('GEMINI_API_KEY')){
+    try{const picks=parse(await _askGeminiPrompt(requestPrompt,{maxTokens:220,temperature:0.1,timeout:30}));if(picks.length)return picks;}
+    catch(error){_recordProviderFailure('Gemini',error.status,error.message);}
+  }
+  if(cfg('OPENROUTER_API_KEY')&&!orCooling()){
+    try{
+      const response=await postOpenRouter([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
+      const message=response&&response.choices&&response.choices[0]&&response.choices[0].message||{};
+      const picks=parse(message.content||message.reasoning||'');if(picks.length)return picks;
+    }catch(error){_recordProviderFailure('OpenRouter',error.status,error.message);}
+  }
+  try{
+    const response=await postOllama(requestPrompt,{numPredict:220,temperature:0.1,timeout:45});
+    const picks=parse(response&&response.response||'');if(picks.length)return picks;
+  }catch(error){_recordProviderFailure('Ollama',error.status,error.message);}
+  return[];
+}
 async function askOpenRouterMulti(q,o,ex,n){if(!cfg('OPENROUTER_API_KEY')||orCooling())return[];const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOpenRouter([{role:'user',content:_multiPrompt(q,o,n,f)}],{maxTokens:64,temperature:0.2,timeout:25});if(!r)return[];const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}catch(e){return[];}}
 async function askOpenRouterWebMulti(q,o,ex){if(!cfg('OPENROUTER_API_KEY')||_orWebDisabled||orCooling())return[];const excluded=(ex||[]).map((index)=>o[index]).filter(Boolean);const prompt=_multiPrompt(q,o,'Use web search results to select the correct options.',excluded);const response=await postOpenRouter([{role:'user',content:prompt}],{plugins:[{id:'web',engine:'exa',max_results:cfg('WEB_SEARCH_MAX_RESULTS'),search_prompt:'Exact question and answers.'}],maxTokens:100,temperature:0.1,timeout:45});if(!response)return[];const message=response.choices?.[0]?.message||{};const first=((message.content||message.reasoning||'').trim().split('\n')[0]||'');return _interpretMulti(first,o,ex);}
 async function askOllamaMulti(q,o,ex,n){const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOllama(_multiPrompt(q,o,n,f),{numPredict:48,temperature:0.1,timeout:45});if(r&&r.response){const ra=r.response.trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}return[];}catch(e){return[];}}
@@ -426,7 +496,7 @@ async function askWebMulti(q,o,ex){
     }).map(({index})=>index).filter((index)=>!(ex||[]).includes(index));
   }catch(error){console.warn('[providers] Non-AI multi-answer search failed:',error.message);return[];}
 }
-async function askAiMulti(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.filter((match)=>!isWrong(o[match.index]));if(localOk.length)return localOk.map((match)=>match.index);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push(i);}if(!vp.length)for(let i=0;i<o.length;i++)vp.push(i);const fo=vp.map(i=>o[i]);const kp=[];if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,0.72);if(ki!==-1)kp.push(ki);const e=await keyAnswer(q);if(e){for(const i of _interpretMulti(e,fo))if(!kp.includes(i))kp.push(i);}}if(cfg('WEB_SEARCH_ENABLED')){const wp=await askWebMulti(q,fo);if(wp.length)return wp.map(p=>vp[p]).filter(p=>p<vp.length);}let nt='';if(kp.length)nt='Key suggests '+kp.map(p=>String(p+1)).join(', ')+'.';const exNote=_excludedNote(w);if(exNote)nt=(nt?nt+' ':'')+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const picks=await askCustomApiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('GEMINI_API_KEY')){const picks=await askGeminiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const webPicks=await askOpenRouterWebMulti(q,fo);if(webPicks.length)return webPicks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const pk=await askOpenRouterMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}try{const pk=await askOllamaMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}catch(e){}if(kp.length)return kp.map(p=>vp[p]).filter(p=>p<vp.length);return[];}
+async function askAiMulti(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.filter((match)=>match.verified===true&&!isWrong(o[match.index]));if(localOk.length)return localOk.map((match)=>match.index);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push(i);}if(!vp.length)for(let i=0;i<o.length;i++)vp.push(i);const fo=vp.map(i=>o[i]);const kp=[];if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,0.72);if(ki!==-1)kp.push(ki);const e=await keyAnswer(q);if(e){for(const i of _interpretMulti(e,fo))if(!kp.includes(i))kp.push(i);}}if(cfg('WEB_SEARCH_ENABLED')){const wp=await askWebMulti(q,fo);if(wp.length)return wp.map(p=>vp[p]).filter(p=>p<vp.length);}let nt='';if(kp.length)nt='Key suggests '+kp.map(p=>String(p+1)).join(', ')+'.';const exNote=_excludedNote(w);if(exNote)nt=(nt?nt+' ':'')+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const picks=await askCustomApiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('GEMINI_API_KEY')){const picks=await askGeminiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const webPicks=await askOpenRouterWebMulti(q,fo);if(webPicks.length)return webPicks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const pk=await askOpenRouterMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}try{const pk=await askOllamaMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}catch(e){}if(kp.length)return kp.map(p=>vp[p]).filter(p=>p<vp.length);return[];}
 async function askWeb(q,o,oi){
   if(!cfg('WEB_SEARCH_ENABLED'))return-1;
   try{
@@ -443,6 +513,7 @@ async function askWeb(q,o,oi){
 }
 function _textPrompt(q,f,v,n,force,courseContext){
   const hasBlank=BLANK_RE.test(q);
+  const asksAcronym=/\b(?:abbreviation|acronym)\b/i.test(q||'');
   let prompt='';
   const exNote=_excludedNote(f);
   if(exNote)prompt+=exNote+' ';
@@ -450,11 +521,23 @@ function _textPrompt(q,f,v,n,force,courseContext){
   if(v)prompt+=RETRY_VARIANTS[Math.min(v,RETRY_VARIANTS.length-1)]+'\n\n';
   if(n)prompt=n+'\n\n'+prompt;
   const blankRules=hasBlank
-    ? '\nTHE QUESTION HAS A ______ BLANK.\nReturn ONLY the exact missing word or shortest correct phrase. Do not write a full sentence, quotation marks, or an explanation.\n'
-    : '\nReturn ONLY the exact answer word or short phrase (1-5 words). Never write sentences or explanations.\n';
+    ? '\nTHE QUESTION HAS A ______ BLANK.\nReturn ONLY the exact concise missing module term (1-3 words). Do not write a full sentence, quotation marks, labels, explanations, or thinking preambles.\n'
+    : '\nReturn ONLY the exact concise module term (1-3 words). Never write sentences, labels, explanations, or thinking preambles.\n';
+  const acronymRule=asksAcronym
+    ? '\nThe question asks for an abbreviation or acronym: output ONLY the uppercase acronym (for example CPU, IDS, or OSI).\n'
+    : '';
+  const termRule='\nDo not append filler words such as "Attack" or "Data" unless they are specifically part of the exact term. Examples: "Buffer Overflow", "Phishing", "Integrity", "Software".\n';
   const unknownRule=force?'- NONE is not allowed.\n':'- If unknown, reply NONE\n';
   const contextLine = courseContext ? '\nCourse/Subject: '+courseContext+'\n' : '';
-  return prompt+'You are an expert tutor.\n'+_domainNote(q)+contextLine+'\n'+unknownRule+blankRules+'Question: '+q+'\n\nReply with ONLY the exact answer.';
+  return prompt+'You are an expert tutor.\n'+_domainNote(q)+contextLine+'\n'+unknownRule+blankRules+acronymRule+termRule+'Question: '+q+'\n\nReply with ONLY the exact answer.';
+}
+function _conciseTextAnswer(answer,question){
+  const value=String(answer||'').trim();
+  if(!value)return'';
+  if(/\b(?:abbreviation|acronym)\b/i.test(question||'')){
+    return /^[A-Za-z0-9][A-Za-z0-9./+-]*$/.test(value)?value.toUpperCase():'';
+  }
+  return value.split(/\s+/).length<=3?value:'';
 }
 async function askOpenRouterText(q,bl,f,t,v,n,force,courseContext){if(!cfg('OPENROUTER_API_KEY')||orCooling())return'';try{const r=await postOpenRouter([{role:'user',content:_textPrompt(q,f,v,n,force,courseContext)}],{maxTokens:80,temperature:t??0.1,timeout:25,quiet:true});if(!r)return'';const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();return _cleanTyped(ra,bl);}catch(e){_recordProviderFailure('OpenRouter',e.status,e.message);return'';}}
 async function askOllamaText(q,bl,f,t,v,n,force,courseContext){try{const r=await postOllama(_textPrompt(q,f,v,n,force,courseContext),{numPredict:60,temperature:t??0.1,timeout:35,quiet:true});if(r&&r.response)return _cleanTyped(r.response.trim(),bl);return'';}catch(e){_recordProviderFailure('Ollama',e.status,e.message);return'';}}
@@ -475,7 +558,7 @@ async function askAiText(q){
   const b=new Set(w.map(x=>normText(x)));
   const local=await localBankAnswerHits(q);
   if(local&&local.length){
-    const ok=local.find((hit)=>!b.has(normText(hit.answer)));
+    const ok=local.find((hit)=>hit.verified===true&&!b.has(normText(hit.answer)));
     if(ok)return _cleanTyped(ok.answer,bl);
   }
   const chq=(q||'').replace(/[_\-]{2,}/g,' ').replace(/\s+/g,' ').trim();
@@ -486,7 +569,7 @@ async function askAiText(q){
   if(cfg('ANSWER_KEY_ENABLED')){const ka=await keyAnswer(chq);if(ka&&!b.has(normText(ka)))return ka;}
   if(cfg('WEB_SEARCH_ENABLED')){const results=await askWebText(q);if(results)q+='\n\nNon-AI web search snippets (reference only):\n'+results.slice(0,2000);}
   const snippets=await snippetLookup;
-  if(snippets)q+='\n\nReference search snippets:\n'+snippets+'\n\nBased on the question and reference snippets above, reply ONLY with the exact short answer (1-5 words).';
+  if(snippets)q+='\n\nReference search snippets:\n'+snippets+'\n\nBased on the question and reference snippets above, reply ONLY with the exact concise module term (1-3 words), with no explanation.';
 
   if(cfg('ANSWER_KEY_ENABLED')){const h=await hintText(chq);if(h)q+='\n\n'+h;}
 
@@ -497,8 +580,13 @@ async function askAiText(q){
     for(let r=0;r<cfg('MAX_TEXT_RETRIES');r++){
       const v=Math.min(ep+r,RETRY_VARIANTS.length-1);
       const temps=[0.1,0.5,0.75,0.95];
-      const a=await fn(q,bl,b.size?[...b]:null,temps[r%4],v,nt,false,courseContext);
+      let a=await fn(q,bl,b.size?[...b]:null,temps[r%4],v,nt,false,courseContext);
       if(!a)continue;
+      a=_conciseTextAnswer(a,q);
+      if(!a){
+        if(typeof logHUD==='function')logHUD('warn',name+': rejected answer outside the concise 1-3 word format');
+        continue;
+      }
       if(isConversationalFiller(a) || a.length > 60){
         if(typeof logHUD==='function') logHUD('warn', name+': rejected conversational/long answer ('+a.length+' chars): '+a.slice(0,80));
         continue;
@@ -545,7 +633,7 @@ async function askAiText(q){
   answer=await askTextProvider('Gemini','GEMINI_API_KEY',askGeminiText);if(answer)return answer;
   answer=await askTextProvider('OpenRouter','OPENROUTER_API_KEY',askOpenRouterText);if(answer)return answer;
   answer=await askTextProvider('Ollama','',askOllamaText);if(answer)return answer;
-  try{const f=await askOllamaText(q,bl,b.size?[...b]:null,0.3,RETRY_VARIANTS.length-1,nt,true,courseContext);if(f&&!b.has(normText(f))&&!isConversationalFiller(f)&&f.length<=60)return f;}catch(e){}
+  try{const f=_conciseTextAnswer(await askOllamaText(q,bl,b.size?[...b]:null,0.3,RETRY_VARIANTS.length-1,nt,true,courseContext),q);if(f&&!b.has(normText(f))&&!isConversationalFiller(f)&&f.length<=60)return f;}catch(e){}
   if(cfg('TYPE_ON_FAILURE')&&lg&&!b.has(normText(lg))&&!isConversationalFiller(lg)&&lg.length<=60)return lg;
   return '';
 }

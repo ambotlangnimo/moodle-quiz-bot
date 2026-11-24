@@ -177,7 +177,7 @@ async function flushNow() {
   await doFlush();
 }
 // ── Answer key cache ────────────────────────────────────────────────────────
-async function answerKeyGet(key) {
+async function answerKeyGet(key, options = {}) {
   await ensureLoaded();
   key = normText(key);
   const entry = _answerKeyMem[key];
@@ -195,7 +195,16 @@ async function answerKeyGet(key) {
     scheduleFlush();
     return null;
   }
-  return entry[1]; // hits array
+  const wrong = (await getWrongAnswers(key)).map((answer) => normText(answer)).filter(Boolean);
+  const includeUnverified = options && options.includeUnverified === true;
+  return entry[1].filter((hit) => {
+    if (!hit || hit.wrong === true) return false;
+    if (!includeUnverified && hit.verified !== true) return false;
+    const answer = hitAnswerNorm(hit);
+    return !answer || !wrong.some((knownWrong) =>
+      answer === knownWrong || similarity(answer, knownWrong) >= 0.9
+    );
+  });
 }
 
 function hitAnswerNorm(hit) {
@@ -320,7 +329,7 @@ async function saveLocalAnswer(question, answer, course = 'learned-review') {
   const key = normText(question);
   const value = (answer || '').replace(/<[^>]+>/g, '').trim();
   if (!key || !value) return;
-  const hits = (await answerKeyGet(key)) || [];
+  const hits = (await answerKeyGet(key, { includeUnverified: true })) || [];
   const answerNorm = normText(value);
   if (!hits.some((hit) => hit && normText(hit.answer) === answerNorm)) {
     hits.push({

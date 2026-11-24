@@ -1560,7 +1560,8 @@ async function learnFromReviewRoot(root, learned) {
 
     // 6) Two-option / True-False: when the attempt was wrong (earned === 0), the
     //    opposite (unselected) option is the correct answer — save it as verified.
-    if (grade && grade.earned === 0 && !evidence.right.length) {
+    if (grade && grade.earned === 0 && !evidence.right.length
+        && !c.querySelector('input[type="checkbox"]')) {
       const optionInputs = Array.from(c.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
         .filter((input) => input.value !== '-1');
       const optionTexts = [];
@@ -1584,11 +1585,72 @@ async function learnFromReviewRoot(root, learned) {
       }
     }
 
+    const checkboxInputs = Array.from(c.querySelectorAll('input[type="checkbox"]'))
+      .filter((input) => input.value !== '-1');
+    const partialCheckbox = checkboxInputs.length > 0 && grade
+      && grade.earned > 0 && grade.max > grade.earned;
+    if (partialCheckbox) {
+      const allChoices = [];
+      const addChoice = (value) => {
+        const text = normalizeReviewText(value);
+        if (text && !allChoices.some((choice) => normText(choice) === normText(text))) allChoices.push(text);
+      };
+      checkboxInputs.forEach((input) => addChoice(reviewAnswerText(input)));
+      const checkedChoices = [];
+      for (const input of checkboxInputs.filter((item) => item.checked)) {
+        const text = normalizeReviewText(reviewAnswerText(input));
+        if (text && !checkedChoices.some((choice) => normText(choice) === normText(text))) checkedChoices.push(text);
+      }
+      const markedCorrect = checkboxInputs
+        .filter((input) => input.checked && evidence.optionOutcome(input) === 'right')
+        .map((input) => normalizeReviewText(reviewAnswerText(input)))
+        .filter(Boolean);
+      const markedUnique = markedCorrect.filter((answer, index, list) =>
+        list.findIndex((other) => normText(other) === normText(answer)) === index
+      );
+      const reviewText = normalizeReviewText(c.innerText || c.textContent || '');
+      const correctCountMatch = reviewText.match(/you have correctly selected\s+(\d+)/i);
+      const correctlySelected = correctCountMatch
+        ? Number(correctCountMatch[1])
+        : markedUnique.length;
+      const expectedTotal = correctlySelected > 0
+        ? Math.round(correctlySelected * (grade.max / grade.earned))
+        : 0;
+      const selectedCorrect = correctCountMatch
+        ? (markedUnique.length >= correctlySelected
+          ? markedUnique.slice(0, correctlySelected)
+          : checkedChoices.length === correctlySelected ? checkedChoices : [])
+        : markedUnique;
+
+      evidence.right.splice(0, evidence.right.length);
+      if (expectedTotal > 0 && expectedTotal === checkboxInputs.length) {
+        allChoices.forEach((choice) => evidence.add(evidence.right, choice));
+        evidence.wrong.splice(0, evidence.wrong.length);
+        logHUD('info', 'Partial-credit deduction: all ' + checkboxInputs.length + ' checkbox options are correct');
+      } else {
+        selectedCorrect.forEach((choice) => evidence.add(evidence.right, choice));
+        const correctKeys = new Set(evidence.right.map((answer) => normText(answer)));
+        for (let index = evidence.wrong.length - 1; index >= 0; index -= 1) {
+          if (correctKeys.has(normText(evidence.wrong[index]))) evidence.wrong.splice(index, 1);
+        }
+        if (checkedChoices.length) {
+          try {
+            const signature = checkedChoices.map(normText).filter(Boolean).sort()
+              .map((choice) => choice.length + ' ' + choice).join(' ');
+            await wrongSet(qText, 'MULTISELECT PARTIAL COMBO ' + signature);
+            stats.wrong += 1;
+          } catch (error) {
+            logHUD('warn', 'Could not record partial checkbox selection: ' + error.message);
+          }
+        }
+      }
+    }
+
     // Save with `{ verified: true, replaceVerified: true }`: a single-answer
     // question retires stale verified hits for its prompt, while a multi-select
     // question (2+ correct options) keeps every option so the next attempt can
     // tick them all.
-    const replaceVerified = evidence.right.length === 1;
+    const replaceVerified = checkboxInputs.length === 0 && evidence.right.length === 1;
     for (const answer of evidence.right) {
       try {
         const existing = await answerKeyGet(qText);
@@ -1672,7 +1734,19 @@ function syncGitHubBankNow() {
   });
 }
 
+let _reviewScanInFlight = false;
+
 async function doReviewScan() {
+  if (_reviewScanInFlight) return null;
+  _reviewScanInFlight = true;
+  try {
+    return await doReviewScanUnlocked();
+  } finally {
+    _reviewScanInFlight = false;
+  }
+}
+
+async function doReviewScanUnlocked() {
   const learned = { right: 0, wrong: 0, matching: 0, deduced: 0, new: 0 };
   logHUD('info', 'Review scan: checking all answers...');
 
@@ -2197,7 +2271,9 @@ async function submitAttempt() {
 // Build a predicate that flags options matching a stored (known-wrong) answer.
 async function buildWrongOptionFilter(qText, options) {
   const wrong = await getWrongAnswers(qText);
-  const set = new Set((wrong || []).map((w) => normText(w)).filter(Boolean));
+  const set = new Set((wrong || [])
+    .map((w) => normText(w))
+    .filter((value) => value && !value.startsWith('multiselect partial ')));
   return (option) => {
     const on = normText(option);
     if (!on) return false;
@@ -2338,18 +2414,20 @@ async function handleQuestion(data) {
 
   if (kind === 'check') {
     const isWrong = await buildWrongOptionFilter(text, options);
-    const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong);
+    const previousWrong = await getWrongAnswers(text);
+    const localMatches = rankLocalMatches(await localBankOptionMatches(text, options), isWrong)
+      .filter((match) => match.verified === true);
     if (runCancelled()) return false; // Stop / Run / Disable while we were thinking
-    if (localMatches.length) {
+    if (localMatches.length >= 2 && !previousWrong.length) {
       for (const match of localMatches) {
         if (runCancelled()) return false;
         const element = elements[match.index];
         if (element && !element.checked) element.click();
-        logHUD('info', 'Tier 1 (Local Bank): ' + match.option);
+        logHUD('info', 'Tier 1 (Verified Bank): ' + match.option);
       }
       return true;
     }
-    let picks = await askAiMulti(text, options, images);
+    let picks = await askAiMultiSelect(text, options);
     if (runCancelled()) return false;
     picks = (picks || []).filter((p) => p >= 0 && p < options.length && !isWrong(options[p]));
     if (!picks.length) {

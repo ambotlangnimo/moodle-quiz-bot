@@ -396,7 +396,7 @@ async function runCourseHarvest(courseId, courseKey, keywords, force, sender) {
         const key = normText(hit.question);
         const answerNorm = normText(hit.answer);
         if (!key || !answerNorm) continue;
-        const existing = await answerKeyGet(key);
+        const existing = await answerKeyGet(key, { includeUnverified: true });
         if (!existing || !existing.some((item) => item && normText(item.answer) === answerNorm)) {
           added++;
         }
@@ -953,12 +953,7 @@ async function handleMessage(message, sender) {
 
         for (const [key, entry] of Object.entries(local)) {
           if (!key || !Array.isArray(entry) || !Array.isArray(entry[1])) continue;
-          const wanted = entry[1].filter((hit) => hit && hit.answer && (
-            hit.verified === true ||
-            hit.course === 'learned-review' ||
-            hit.course === 'imported' ||
-            (typeof hit.course === 'string' && hit.course.startsWith('harvested-'))
-          )).map((hit) => ({
+          const wanted = entry[1].filter((hit) => hit && hit.answer && hit.verified === true).map((hit) => ({
             question: hit.question || key,
             answer: hit.answer,
             course: hit.course || 'learned-review',
