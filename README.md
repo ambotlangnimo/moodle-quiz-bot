@@ -71,7 +71,6 @@ learned from Moodle review pages.
 |------------|------|
 | `storage` | Cache answer keys, wrong answers, search results, settings |
 | `tabs` | Read quiz URL to detect attempt/review pages |
-| `sidePanel` | Dedicated log console |
 | `https://amaes.com/*` | Moodle instance — content script injection |
 | `https://amauoed.com/*` | Answer key lookup |
 | `https://openrouter.ai/*` | Cloud AI API |

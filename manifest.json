@@ -1,13 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.",
-  "minimum_chrome_version": "114",
   "permissions": [
     "storage",
     "tabs",
-    "sidePanel",
     "unlimitedStorage"
   ],
   "host_permissions": [
@@ -38,9 +36,6 @@
   ],
   "background": {
     "service_worker": "background.js"
-  },
-  "side_panel": {
-    "default_path": "sidepanel.html"
   },
   "options_page": "options.html",
   "action": {
