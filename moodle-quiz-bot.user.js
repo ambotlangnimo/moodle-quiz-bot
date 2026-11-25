@@ -9222,9 +9222,11 @@ try {
 
     /* ── 2D pixel-art cat engine (pure JS, no image assets) ───────────────── */
 
-    const GRID = 24;         // logical 24 × 24 sprite matrix
-    const CANVAS = 96;       // <canvas width/height> = 4 device px per sprite px
-    const FRAME_MS = 143;    // ≈ 7 FPS pixel animation
+    const GRID = 24;              // logical 24 × 24 sprite matrix
+    const CANVAS = 96;            // <canvas width/height> = 4 device px per sprite px
+    const TARGET_FPS = 30;
+    const FRAME_MS = 1000 / TARGET_FPS; // 30 FPS animation loop
+    const BEAT_HZ = 7;            // discrete pixel-step rate (blinks, wags, props)
 
     const BASE_PALETTE = {
       outline: '#241a16',
@@ -9318,14 +9320,17 @@ try {
     let ctx = null;
     let primaryCtx = null;
     let frameTick = 0;
+    let frameTimeSec = 0;
     let frameTimer = null;
+    let frameRafId = null;
+    let lastFrameAt = 0;
     let walkUntil = 0;       // idle + still gliding → play the trot cycle
 
     function paintPrimary() {
       if (!primaryCtx || !catEl) return;
       ctx = primaryCtx;
       applyPalette(assignedCatId);
-      drawCatFrame(renderState(), frameTick, assignedCatId);
+      drawCatFrame(renderState(), frameTick, assignedCatId, frameTimeSec);
     }
 
     function px(x, y, color, w, h) {
@@ -9335,7 +9340,11 @@ try {
     }
 
     function clearSprite() {
-      if (ctx) ctx.clearRect(0, 0, GRID, GRID);
+      if (!ctx) return;
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, CANVAS, CANVAS);
+      ctx.restore();
     }
 
     // One blob = stacked rows: each row's edge pixels become the outline and the
@@ -9582,14 +9591,14 @@ try {
       }
     }
 
-    // Reading glasses over the eyes: they drop onto the muzzle over ~350 ms, then
-    // a white glint sweeps across both lenses while the scan runs.
+    // Reading glasses over the eyes: they glide smoothly onto the muzzle over 350 ms,
+    // then a white glint sweeps across both lenses while the scan runs.
     function drawGlasses(tick) {
       let drop = 0;
       const startedAt = reviewScan.active ? reviewScan.startedAt : reviewStartedAt;
       if (startedAt) {
         const elapsed = Date.now() - startedAt;
-        if (elapsed >= 0 && elapsed < 350) drop = -4 + Math.round((elapsed / 350) * 4);
+        if (elapsed >= 0 && elapsed < 350) drop = -4 + (elapsed / 350) * 4;
       }
       const top = 7 + drop;
       // left lens x8..11, right lens x12..15 (the eyes sit inside them)
@@ -9623,17 +9632,65 @@ try {
       return isKnownState(currentState) ? currentState : 'idle';
     }
 
-    function drawCatFrame(state, tick, catKey) {
+    function applySmoothMotion(state, t) {
       if (!ctx) return;
+      const scale = CANVAS / GRID;
+      let sx = 1;
+      let sy = 1;
+      let ty = 0;
+      let rot = 0;
+
+      if (state === 'nap') {
+        const breath = Math.sin(t * 1.7);
+        sx = 1 + breath * 0.032;
+        sy = 1 - breath * 0.036;
+      } else if (state === 'walk') {
+        const stride = Math.sin(t * 11);
+        ty = -Math.abs(stride) * 0.95;
+        rot = stride * 0.045;
+        sx = 1 - Math.abs(stride) * 0.025;
+        sy = 1 + Math.abs(stride) * 0.03;
+      } else if (state === 'answering') {
+        const bounce = Math.abs(Math.sin(t * 13));
+        ty = -bounce * 1.85;
+        sx = 1 - (bounce - 0.35) * 0.06;
+        sy = 1 + (bounce - 0.35) * 0.07;
+      } else if (state === 'harvesting') {
+        const swing = Math.sin(t * 9.5);
+        rot = swing * 0.055;
+        ty = -Math.max(0, swing) * 0.45;
+      } else if (state === 'clicking' || state === 'nextpage') {
+        const tap = Math.sin(t * 14);
+        ty = -Math.max(0, tap) * 0.65;
+        rot = tap * 0.035;
+      } else {
+        const breath = Math.sin(t * 2.5);
+        sx = 1 + breath * 0.022;
+        sy = 1 - breath * 0.025;
+      }
+
+      // Anchor squash-and-stretch at the cat's feet (12, 22) in logical grid units.
+      const ax = 12;
+      const ay = 22;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.translate(ax, ay + ty);
+      if (rot) ctx.rotate(rot);
+      ctx.scale(sx, sy);
+      ctx.translate(-ax, -ay);
+    }
+
+    function drawCatFrame(state, tick, catKey, timeSec) {
+      if (!ctx) return;
+      const t = typeof timeSec === 'number' ? timeSec : (tick / BEAT_HZ);
       clearSprite();
-      if (state === 'nap') { drawNap(tick); return; }
+      ctx.save();
+      applySmoothMotion(state, t);
+      if (state === 'nap') { drawNap(tick); ctx.restore(); return; }
       const catId = CATS[catKey] ? catKey : assignedCatId;
 
       const walking = state === 'walk';
       const step = Math.floor(tick / 2) % 4;
-      const bob = walking && step % 2 === 1 ? -1 : 0;
-      const hop = state === 'answering' ? (tick % 2 === 0 ? -2 : -1) : 0;
-      const dy = bob + hop;
+      const dy = 0; // smooth 30 FPS bounce/hop handled in applySmoothMotion()
       const blink = state !== 'answering' && state !== 'review' && tick % 26 === 13;
       const twitch = tick % 22 === 4;
       const tailPhase = state === 'harvesting' ? tick : Math.floor(tick / 3);
@@ -9657,11 +9714,11 @@ try {
       else if (state === 'typing') drawLaptop(tick, dy);
       else if (state === 'harvesting') drawPickaxe(tick, dy);
       else if (state === 'review' && catId !== 'luna') drawGlasses(tick); // Luna keeps her shades
+      ctx.restore();
     }
 
-    // Boot the ~7 FPS pixel loop. Hidden/unfocused tabs skip the repaint (the cat
-    // is either hidden there or the user cannot see him), so an idle background
-    // tab costs nothing. The same loop paints the Summon Squad canvases.
+    // Boot the 30 FPS animation loop via requestAnimationFrame (with setInterval
+    // fallback if rAF is unavailable). Hidden tabs pause automatically.
     function startPixelEngine() {
       if (!catEl) return;
       try {
@@ -9675,20 +9732,46 @@ try {
         warnOnce('pixel-context', error);
       }
       if (!primaryCtx) return; // no canvas support: the wrapper simply stays empty
-      if (frameTimer) clearInterval(frameTimer);
-      frameTimer = setInterval(() => {
+      if (frameTimer) { clearInterval(frameTimer); frameTimer = null; }
+      if (frameRafId && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(frameRafId);
+        frameRafId = null;
+      }
+
+      const startedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      lastFrameAt = 0;
+
+      const stepFrame = (nowMs) => {
         try {
           if (wrapEl && wrapEl.style.display === 'none') return;
           if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-          frameTick += 1;
+          frameTimeSec = Math.max(0, (nowMs - startedAt) / 1000);
+          frameTick = Math.floor(frameTimeSec * BEAT_HZ);
           paintPrimary();
           advanceHangoutCats();
-          drawHangoutCats(frameTick);
+          drawHangoutCats(frameTick, frameTimeSec);
         } catch (error) {
           warnOnce('pixel-frame', error);
         }
-      }, FRAME_MS);
+      };
+
+      if (typeof requestAnimationFrame === 'function') {
+        const loop = (now) => {
+          frameRafId = requestAnimationFrame(loop);
+          if (lastFrameAt && now - lastFrameAt < FRAME_MS - 1) return;
+          lastFrameAt = now;
+          stepFrame(now);
+        };
+        frameRafId = requestAnimationFrame(loop);
+      } else {
+        frameTimer = setInterval(() => {
+          const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          stepFrame(now);
+        }, FRAME_MS);
+      }
+
       frameTick = 0;
+      frameTimeSec = 0;
       paintPrimary();
     }
 
@@ -11146,14 +11229,20 @@ try {
       });
     }
 
-    function drawHangoutCats(tick) {
+    function drawHangoutCats(tick, timeSec) {
       if (!hangout.active) return;
       const now = Date.now();
+      const baseTime = typeof timeSec === 'number' ? timeSec : (tick / BEAT_HZ);
       hangout.cats.forEach((cat) => {
         if (!cat.ctx) return;
         ctx = cat.ctx;
         applyPalette(cat.id);
-        drawCatFrame(now < cat.walkUntil ? 'walk' : 'idle', tick + cat.tickOffset, cat.id);
+        drawCatFrame(
+          now < cat.walkUntil ? 'walk' : 'idle',
+          tick + cat.tickOffset,
+          cat.id,
+          baseTime + cat.tickOffset / BEAT_HZ
+        );
       });
     }
 
