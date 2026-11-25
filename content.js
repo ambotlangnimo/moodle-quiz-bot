@@ -586,10 +586,28 @@ function startAutoHarvest() {
 }
 
 function addResultEntry(q, t, a, s) {
-  const b = _hudShadow?.getElementById('hud-body'); if (!b) return;
-  const e = document.createElement('div'); e.className='hud-entry';
-  e.innerHTML = '<div class="q-text">'+esc(q.slice(0,80))+'</div><div class="q-result"><span class="q-tier">'+esc(t)+'</span><span class="q-answer">'+esc(a)+'</span><span class="q-score">'+(s||'')+'</span></div>';
-  b.appendChild(e); b.scrollTop = b.scrollHeight;
+  const b = _hudShadow?.getElementById('hud-body');
+  if (!b) return;
+  const entry = document.createElement('div');
+  entry.className = 'hud-entry';
+  const qDiv = document.createElement('div');
+  qDiv.className = 'q-text';
+  qDiv.textContent = String(q || '').slice(0, 80);
+  const resDiv = document.createElement('div');
+  resDiv.className = 'q-result';
+  const tierSpan = document.createElement('span');
+  tierSpan.className = 'q-tier';
+  tierSpan.textContent = String(t || '');
+  const ansSpan = document.createElement('span');
+  ansSpan.className = 'q-answer';
+  ansSpan.textContent = String(a || '');
+  const scoreSpan = document.createElement('span');
+  scoreSpan.className = 'q-score';
+  scoreSpan.textContent = String(s || '');
+  resDiv.append(tierSpan, ansSpan, scoreSpan);
+  entry.append(qDiv, resDiv);
+  b.appendChild(entry);
+  b.scrollTop = b.scrollHeight;
 }
 
 function setHUDStatus(s) { const e = _hudShadow?.getElementById('hud-status'); if (e) { e.textContent = s; e.className = s; } }
@@ -1042,10 +1060,91 @@ function extractQuestionData() {
   return null;
 }
 
+function isSummaryPage() {
+  return typeof location !== 'undefined' && location.pathname.includes('/mod/quiz/summary.php');
+}
+
+function isQuizViewPage() {
+  return typeof location !== 'undefined' && location.pathname.includes('/mod/quiz/view.php');
+}
+
+// Extract up to MAX_QUESTION_IMAGES content images from a `.que` block as
+// `{ base64, mimeType }` objects for Vision AI providers. Runs lazily only
+// when local-bank lookup misses so fast paths pay zero network overhead.
+async function extractQuestionImages(container) {
+  if (!cfg('VISION_ENABLED') || !container || !container.querySelectorAll) return [];
+  const limit = Math.max(0, Number(cfg('MAX_QUESTION_IMAGES')) || 2);
+  if (limit === 0) return [];
+
+  const scope = container.querySelector('.qtext') || container.querySelector('.formulation') || container;
+  const imgNodes = Array.from(scope.querySelectorAll('img')).filter((img) => {
+    if (!img) return false;
+    const cls = String(img.className || '').toLowerCase();
+    if (/\b(icon|feedbackimage|smallicon|questionflagimage)\b/.test(cls)) return false;
+    if (img.closest('.info, .outcome, .feedback, .questionflag')) return false;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if ((w > 0 && w < 24) || (h > 0 && h < 24)) return false;
+    const src = img.getAttribute('src') || img.src || '';
+    return Boolean(src) && !src.startsWith('data:image/gif;base64,R0lGOD');
+  });
+
+  const results = [];
+  const seen = new Set();
+  for (const img of imgNodes) {
+    if (results.length >= limit) break;
+    const rawSrc = img.src || img.getAttribute('src') || '';
+    if (!rawSrc || seen.has(rawSrc)) continue;
+    seen.add(rawSrc);
+
+    const dataMatch = rawSrc.match(/^data:(image\/[^;]+);base64,(.+)$/i);
+    if (dataMatch) {
+      results.push({ mimeType: dataMatch[1], base64: dataMatch[2] });
+      continue;
+    }
+
+    // Try fast in-page canvas capture first for already-loaded same-origin images.
+    let captured = null;
+    try {
+      if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1024;
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+          const m = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/i);
+          if (m) captured = { mimeType: m[1], base64: m[2] };
+        }
+      }
+    } catch (error) { /* tainted cross-origin canvas: fall back to background fetch */ }
+
+    if (captured) {
+      results.push(captured);
+      continue;
+    }
+
+    try {
+      const absUrl = new URL(rawSrc, location.href).href;
+      const fetched = await bgFetch('fetchImageBase64', { url: absUrl, timeout: 10000 }, 13000);
+      if (fetched && fetched.base64) {
+        results.push({ mimeType: fetched.mimeType || 'image/png', base64: fetched.base64 });
+      }
+    } catch (error) {
+      logHUD('warn', 'Vision image fetch skipped: ' + error.message);
+    }
+  }
+  return results;
+}
+
 function waitForManual(elements, kind, question = '', options = [], statements = []) {
   logHUD('warn', 'No AI answer (check API key/credits or select manually)');
   return new Promise((resolve) => {
-    const deadline = Date.now() + 300000;
+    const timeoutSec = Number(cfg('MANUAL_TIMEOUT')) || 300;
+    const deadline = Date.now() + Math.max(10, timeoutSec) * 1000;
     let checkSelection = '';
     let checkChangedAt = 0;
     const saveManualAnswers = async () => {
@@ -2261,26 +2360,111 @@ async function selectAnswer(selectEl, optionText) {
   } catch(e) { return false; }
 }
 
-function typeAnswer(element, text) {
+async function typeAnswer(element, text) {
   try {
+    const value = String(text || '');
+    const delayMs = Math.max(0, Math.min(Number(cfg('TYPE_DELAY_MS')) || 0, 50));
     element.focus();
-    element.value = text;
-    element.dispatchEvent(new Event('input', {bubbles:true}));
-    element.dispatchEvent(new Event('change', {bubbles:true}));
-    element.dispatchEvent(new Event('blur', {bubbles:true}));
+    if (delayMs > 0 && value.length <= 80) {
+      element.value = '';
+      for (const ch of value) {
+        if (runCancelled()) return false;
+        element.value += ch;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    } else {
+      element.value = value;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
     return true;
-  } catch(e) { return false; }
+  } catch (e) { return false; }
 }
 
 async function submitAttempt() {
-  const sel = ['#id_submitbutton','input[value="Submit all and finish"]','button[name="submitbutton"]'];
-  for (const s of sel) {
-    const btn = document.querySelector(s);
-    if (btn) { btn.click(); return true; }
+  const findSubmitButton = () => {
+    const selectors = [
+      '#id_submitbutton',
+      'input[value="Submit all and finish"]',
+      'button[name="submitbutton"]',
+      '.submitbtns button.btn-primary',
+      'form[action*="processattempt.php"] button[type="submit"]',
+      'form[action*="processattempt.php"] input[type="submit"]',
+    ];
+    for (const s of selectors) {
+      const btn = document.querySelector(s);
+      if (btn && !btn.disabled) return btn;
+    }
+    for (const btn of document.querySelectorAll('button, input[type="submit"]')) {
+      const label = String(btn.textContent || btn.value || '').trim().toLowerCase();
+      if (!btn.disabled && label.includes('submit all and finish')) return btn;
+    }
+    return null;
+  };
+
+  const findConfirmButton = () => {
+    const selectors = [
+      '.modal.show button[data-action="save"]',
+      '.modal.show .modal-footer .btn-primary',
+      '.moodle-dialogue-wrap .confirmation-buttons input[value*="Submit" i]',
+      '.moodle-dialogue-wrap .confirmation-buttons .btn-primary',
+      '.confirmation-dialogue input[type="button"].btn-primary',
+      '[role="dialog"] button.btn-primary',
+    ];
+    for (const s of selectors) {
+      const btn = document.querySelector(s);
+      if (btn && !btn.disabled && btn.offsetParent !== null) return btn;
+    }
+    for (const btn of document.querySelectorAll('.modal button, [role="dialog"] button, .moodle-dialogue-wrap input[type="button"]')) {
+      const label = String(btn.textContent || btn.value || '').trim().toLowerCase();
+      if (!btn.disabled && btn.offsetParent !== null && label.includes('submit all and finish')) return btn;
+    }
+    return null;
+  };
+
+  const trigger = findSubmitButton();
+  if (!trigger) return false;
+  trigger.click();
+  const waitMs = Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900);
+  await new Promise((r) => setTimeout(r, waitMs));
+  const confirm = findConfirmButton();
+  if (confirm) {
+    confirm.click();
+    logHUD('success', 'Confirmed Submit all and finish');
   }
-  const buttons = document.querySelectorAll('button');
-  for (const btn of buttons) { if (btn.textContent.trim().toLowerCase().includes('submit all and finish')) { btn.click(); return true; } }
-  return false;
+  return true;
+}
+
+const MAX_AUTO_REATTEMPTS_PER_SESSION = 10;
+
+async function tryAutoReattempt() {
+  if (!cfg('AUTO_REATTEMPT') || !isQuizViewPage()) return false;
+  const quizId = new URLSearchParams(location.search || '').get('id') || location.pathname;
+  const countKey = 'qb_reattempt_count_' + quizId;
+  let attempts = 0;
+  try { attempts = Number(sessionStorage.getItem(countKey)) || 0; } catch (error) { attempts = 0; }
+  if (attempts >= MAX_AUTO_REATTEMPTS_PER_SESSION) {
+    logHUD('warn', `Auto-reattempt cap (${MAX_AUTO_REATTEMPTS_PER_SESSION}) reached for this quiz.`);
+    return false;
+  }
+
+  const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a.btn'));
+  const target = buttons.find((el) => {
+    if (el.disabled) return false;
+    const label = String(el.textContent || el.value || '').trim().toLowerCase();
+    return /\bre-?attempt quiz\b|\battempt quiz now\b|\bcontinue the last attempt\b|\bcontinue your attempt\b/.test(label);
+  });
+  if (!target) return false;
+
+  try { sessionStorage.setItem(countKey, String(attempts + 1)); } catch (error) { /* ignore */ }
+  logHUD('info', `Auto-reattempting quiz (${attempts + 1}/${MAX_AUTO_REATTEMPTS_PER_SESSION})...`);
+  target.click();
+  await new Promise((r) => setTimeout(r, Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900)));
+  const startConfirm = document.querySelector('#id_submitbutton, .modal.show button[data-action="save"], .modal.show .btn-primary');
+  if (startConfirm && !startConfirm.disabled) startConfirm.click();
+  return true;
 }
 // Build a predicate that flags options matching a stored (known-wrong) answer.
 async function buildWrongOptionFilter(qText, options, wrongList) {
@@ -2470,7 +2654,7 @@ async function handleQuestion(data) {
       if (!ok) logHUD('warn','Manual text timeout');
       return ok;
     }
-    typeAnswer(elements[0], ans);
+    await typeAnswer(elements[0], ans);
     logHUD('success', 'Typed: '+ans.slice(0,60));
     return true;
   }
@@ -2501,7 +2685,10 @@ async function handleQuestion(data) {
     return true;
   }
   const validOptions = validIndices.map((index) => options[index]);
-  let idx = await askAi(text, validOptions, images);
+  const qContainer = elements[0] && elements[0].closest ? elements[0].closest('div.que') : null;
+  const resolvedImages = (images && images.length) ? images : await extractQuestionImages(qContainer);
+  if (runCancelled()) return false;
+  let idx = await askAi(text, validOptions, resolvedImages);
   if (idx >= 0 && idx < validIndices.length) idx = validIndices[idx];
   else idx = -1;
   if (runCancelled()) return false; // Stop pressed while the AI was thinking
@@ -2576,16 +2763,49 @@ async function startLoop() {
     let emptyScans = 0;
     let stalls = 0;
     let reviewPageHandled = '';
+    let submitTries = 0;
+    let reattemptHandled = '';
     const startTime = Date.now();
-    const maxRun = 8 * 60 * 60 * 1000;
+    const maxRunHours = Math.max(0.25, Number(cfg('MAX_RUN_HOURS')) || 8);
+    const maxRun = maxRunHours * 60 * 60 * 1000;
 
     while (!_stopRequested && token === _runToken) {
       if (Date.now() - startTime > maxRun) {
-        logHUD('error', '8-hour max runtime reached');
+        logHUD('error', `${maxRunHours}-hour max runtime reached`);
         break;
       }
       await new Promise(r => setTimeout(r, cfg('SCAN_INTERVAL')));
       if (token !== _runToken) break; // Stop was pressed while we waited
+
+      // Summary page: automatically submit attempt when AUTO_SUBMIT is enabled.
+      if (isSummaryPage()) {
+        if (cfg('AUTO_SUBMIT')) {
+          const maxTries = Math.max(1, Number(cfg('MAX_SUBMIT_TRIES')) || 4);
+          if (submitTries < maxTries) {
+            submitTries += 1;
+            logHUD('info', `Summary page detected — auto-submitting (${submitTries}/${maxTries})...`);
+            const submitted = await submitAttempt();
+            if (submitted) {
+              await new Promise(r => setTimeout(r, Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900)));
+              continue;
+            }
+          }
+        }
+        continue;
+      }
+      submitTries = 0;
+
+      // Quiz view page: optionally kick off a re-attempt when AUTO_REATTEMPT is enabled.
+      if (isQuizViewPage()) {
+        const viewId = typeof location === 'undefined' ? 'view' : location.href;
+        if (cfg('AUTO_REATTEMPT') && viewId !== reattemptHandled) {
+          reattemptHandled = viewId;
+          await tryAutoReattempt();
+        }
+        continue;
+      }
+      reattemptHandled = '';
+
       if (isReviwPg()) {
         const pageId = typeof location === 'undefined' ? 'review' : location.href;
         if (pageId !== reviewPageHandled) {
@@ -2623,6 +2843,8 @@ async function startLoop() {
               logHUD('info', 'All answered — advancing');
               const ok = cfg('AUTO_CLICK_NEXT') ? await clickNext() : false;
               if (!ok) await clickFinish();
+              const pauseNext = Number(cfg('PAUSE_AFTER_NEXT')) || 0;
+              if (pauseNext > 0) await new Promise(r => setTimeout(r, pauseNext));
             }
             handledQuestions.clear();
             attemptsByQuestionId.clear();

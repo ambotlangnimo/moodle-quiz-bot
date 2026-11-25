@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  STORAGE — promise-mutex serialized read-modify-write cycle
 //  chrome.storage.local for answer key cache, wrong cache, search cache.
-//  In-memory mirror for hot-path lookups.
+//  In-memory mirror + inverted token index for fast fuzzy lookups.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Promise-mutex serialiser ────────────────────────────────────────────────
@@ -9,17 +9,76 @@ let _queue = Promise.resolve();
 
 /**
  * Serialise a read-modify-write cycle end to end.
- * fn receives the current data dict, must return the new data dict (or same).
  */
 async function mutex(fn) {
   _queue = _queue.then(fn, fn);
   return _queue;
 }
 
-// ── In-memory mirrors ───────────────────────────────────────────────────────
+// ── In-memory mirrors + inverted token index ────────────────────────────────
 let _answerKeyMem = {};
 let _wrongMem = {};
 let _searchMem = {};
+
+// Inverted index: normalized token (>=3 chars) -> Set of normalized question keys.
+// Keeps fuzzy lookups fast even with tens of thousands of banked questions.
+const _tokenIndex = new Map();
+const _keyTokens = new Map();
+
+const INDEX_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'that', 'this', 'with', 'from', 'are', 'was', 'were',
+  'what', 'which', 'who', 'whom', 'when', 'where', 'why', 'how', 'not', 'can',
+  'does', 'into', 'your', 'their', 'they', 'them', 'have', 'has', 'had', 'its',
+  'one', 'two', 'all', 'any', 'but', 'you', 'will', 'would', 'should', 'could',
+]);
+
+function _extractIndexTokens(normKey) {
+  if (!normKey) return [];
+  const words = normKey.split(' ');
+  const out = [];
+  const seen = new Set();
+  for (const word of words) {
+    if (word.length < 3 || INDEX_STOP_WORDS.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    out.push(word);
+  }
+  return out;
+}
+
+function _indexAnswerKey(key) {
+  if (!key) return;
+  _unindexAnswerKey(key);
+  const tokens = _extractIndexTokens(key);
+  _keyTokens.set(key, tokens);
+  for (const token of tokens) {
+    let bucket = _tokenIndex.get(token);
+    if (!bucket) {
+      bucket = new Set();
+      _tokenIndex.set(token, bucket);
+    }
+    bucket.add(key);
+  }
+}
+
+function _unindexAnswerKey(key) {
+  const prev = _keyTokens.get(key);
+  if (!prev) return;
+  for (const token of prev) {
+    const bucket = _tokenIndex.get(token);
+    if (!bucket) continue;
+    bucket.delete(key);
+    if (bucket.size === 0) _tokenIndex.delete(token);
+  }
+  _keyTokens.delete(key);
+}
+
+function _rebuildTokenIndex() {
+  _tokenIndex.clear();
+  _keyTokens.clear();
+  for (const key of Object.keys(_answerKeyMem)) {
+    _indexAnswerKey(key);
+  }
+}
 
 const STORAGE_KEYS = {
   ANSWER_KEY: 'answerkey_cache',
@@ -122,6 +181,7 @@ function ensureLoaded() {
       _answerKeyMem = validateAnswerKey(result[STORAGE_KEYS.ANSWER_KEY] || {});
       _wrongMem = validateWrong(result[STORAGE_KEYS.WRONG] || {});
       _searchMem = validateSearch(result[STORAGE_KEYS.SEARCH] || {});
+      _rebuildTokenIndex();
       _loaded = true;
     })();
   }
@@ -152,6 +212,7 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged)
     if (area !== 'local' || !_loaded) return;
     if (changes[STORAGE_KEYS.ANSWER_KEY]) {
       _answerKeyMem = overlayPending('ak', changes[STORAGE_KEYS.ANSWER_KEY].newValue, _answerKeyMem);
+      _rebuildTokenIndex();
     }
     if (changes[STORAGE_KEYS.WRONG]) {
       _wrongMem = overlayPending('wrong', changes[STORAGE_KEYS.WRONG].newValue, _wrongMem);
@@ -176,6 +237,7 @@ async function flushNow() {
   _flushTimer = null;
   await doFlush();
 }
+
 // ── Answer key cache ────────────────────────────────────────────────────────
 async function answerKeyGet(key, options = {}) {
   await ensureLoaded();
@@ -191,6 +253,7 @@ async function answerKeyGet(key, options = {}) {
   ));
   if (ttl > 0 && !permanent && Date.now() / 1000 - ts > ttl) {
     delete _answerKeyMem[key];
+    _unindexAnswerKey(key);
     markKey('ak', key, true);
     scheduleFlush();
     return null;
@@ -205,6 +268,85 @@ async function answerKeyGet(key, options = {}) {
       answer === knownWrong || similarity(answer, knownWrong) >= 0.9
     );
   });
+}
+
+/**
+ * Fast fuzzy lookup over `_answerKeyMem` backed by the inverted token index.
+ * Pre-filters to keys sharing tokens with `question` before computing bigram
+ * Dice similarity, avoiding O(N) scans over 50k entries.
+ * Returns { key, entry, score } or null.
+ */
+async function answerKeyFindFuzzy(question, minScore = 0.80, acceptEntry = null) {
+  await ensureLoaded();
+  const key = normText(question);
+  if (!key) return null;
+
+  const tokens = _extractIndexTokens(key);
+  let candidates;
+  if (tokens.length > 0 && _tokenIndex.size > 0) {
+    const overlap = new Map();
+    for (const token of tokens) {
+      const bucket = _tokenIndex.get(token);
+      if (!bucket) continue;
+      for (const candidateKey of bucket) {
+        overlap.set(candidateKey, (overlap.get(candidateKey) || 0) + 1);
+      }
+    }
+    if (overlap.size === 0) return null;
+    // Prioritize candidates with highest token overlap; cap work to top 250.
+    candidates = [...overlap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 250)
+      .map(([candidateKey]) => candidateKey);
+  } else {
+    candidates = Object.keys(_answerKeyMem);
+  }
+
+  let best = null;
+  let bestScore = 0;
+  for (const storedKey of candidates) {
+    const value = _answerKeyMem[storedKey];
+    if (!value) continue;
+    const score = similarity(key, storedKey);
+    if (score < minScore || score <= bestScore) continue;
+    if (acceptEntry && !acceptEntry(storedKey, value, score)) continue;
+    best = { key: storedKey, entry: value, score };
+    bestScore = score;
+  }
+  return best;
+}
+
+/**
+ * Search banked questions by substring for the Options Bank Manager UI.
+ */
+async function answerKeySearch(query, limit = 50) {
+  await ensureLoaded();
+  const term = normText(query || '');
+  const max = Math.max(1, Math.min(Number(limit) || 50, 500));
+  const results = [];
+  for (const [key, entry] of Object.entries(_answerKeyMem)) {
+    if (!Array.isArray(entry) || !Array.isArray(entry[1])) continue;
+    const hits = entry[1];
+    if (term) {
+      const keyMatches = key.includes(term);
+      const hitMatches = hits.some((hit) =>
+        hit && (
+          normText(hit.question || '').includes(term) ||
+          normText(hit.answer || '').includes(term) ||
+          normText(hit.course || '').includes(term)
+        )
+      );
+      if (!keyMatches && !hitMatches) continue;
+    }
+    results.push({
+      key,
+      timestamp: entry[0] || 0,
+      hits: hits.slice(),
+    });
+    if (results.length >= max) break;
+  }
+  results.sort((a, b) => b.timestamp - a.timestamp);
+  return results;
 }
 
 function hitAnswerNorm(hit) {
@@ -298,10 +440,9 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   }
   hits = rankHits(hits);
   if (!hits.length) {
-    // Everything stored for this question was a known-wrong guess: drop the key
-    // instead of keeping a poisoned entry around.
     if (_answerKeyMem[key]) {
       delete _answerKeyMem[key];
+      _unindexAnswerKey(key);
       markKey('ak', key, true);
       scheduleFlush();
     }
@@ -309,6 +450,7 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   }
 
   _answerKeyMem[key] = [Date.now() / 1000, hits];
+  _indexAnswerKey(key);
   markKey('ak', key);
   evictAnswerKeys();
   scheduleFlush();
@@ -321,6 +463,7 @@ function evictAnswerKeys() {
   keys.sort((a, b) => (_answerKeyMem[a][0] || 0) - (_answerKeyMem[b][0] || 0));
   for (let i = 0; i < keys.length - max; i++) {
     delete _answerKeyMem[keys[i]];
+    _unindexAnswerKey(keys[i]);
     markKey('ak', keys[i], true);
   }
 }
@@ -366,6 +509,7 @@ async function answerKeyImport(imported) {
     }
     if (hits.length) {
       _answerKeyMem[key] = [Math.max(existing[0] || 0, normalized[0]), hits];
+      _indexAnswerKey(key);
       markKey('ak', key);
     }
   }
@@ -374,18 +518,11 @@ async function answerKeyImport(imported) {
   return { added, questions: Object.keys(_answerKeyMem).length };
 }
 
-// Keys a bank file may carry that are not questions themselves. They must never be
-// imported as question entries (a bare map without the `questions` wrapper still
-// sometimes ships `updatedAt` alongside the questions).
+// Keys a bank file may carry that are not questions themselves.
 const BANK_META_KEYS = new Set(['questions', 'updatedAt', 'format', 'version', 'exportedAt']);
 
 /**
  * Extract the question map out of a bank payload.
- *
- * GitHub banks are written either as `{ "questions": { ... }, "updatedAt": "..." }`
- * (the wrapper used by the Python harvester and by this extension's exporter) or as
- * a bare `{ question: [timestamp, hits] }` map. Unwrap before iterating over the
- * question keys. Returns null when the payload is not a question map at all.
  */
 function unwrapBankQuestions(bankJson) {
   const entriesMap = (bankJson && typeof bankJson.questions === 'object' && !Array.isArray(bankJson.questions))
@@ -397,10 +534,6 @@ function unwrapBankQuestions(bankJson) {
 
 /**
  * Merge a GitHub bank payload into chrome.storage.local (the pull direction).
- *
- * Shared by the options page ("Sync Now") and the service worker (push sync), so
- * both accept every bank shape and count new answers identically.
- * Returns { added, questions }: newly stored answers and the resulting total.
  */
 async function mergeRemoteBankIntoLocal(bankJson) {
   const entriesMap = unwrapBankQuestions(bankJson);
@@ -414,8 +547,6 @@ async function mergeRemoteBankIntoLocal(bankJson) {
     pullMap[rawKey] = normalized;
   }
   const pulled = await answerKeyImport({ questions: pullMap });
-  // Persist right away so the service worker and content scripts see the merged
-  // answers without waiting for the 500 ms flush debounce.
   try {
     await flushNow();
   } catch (error) {
@@ -426,8 +557,10 @@ async function mergeRemoteBankIntoLocal(bankJson) {
 
 async function answerKeyDelete(key) {
   await ensureLoaded();
-  delete _answerKeyMem[key];
-  markKey('ak', key, true);
+  const normalized = normText(key) || key;
+  delete _answerKeyMem[normalized];
+  _unindexAnswerKey(normalized);
+  markKey('ak', normalized, true);
   scheduleFlush();
 }
 
@@ -439,6 +572,7 @@ async function answerKeyDeleteFuzzy(qNorm) {
       (storedKey.length >= 20 && (storedKey.includes(qNorm) || qNorm.includes(storedKey)));
     if (storedKey === qNorm || fuzzy) {
       delete _answerKeyMem[storedKey];
+      _unindexAnswerKey(storedKey);
       markKey('ak', storedKey, true);
     }
   }
@@ -515,6 +649,7 @@ async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
     markKey('ak', key);
   } else {
     delete _answerKeyMem[key];
+    _unindexAnswerKey(key);
     markKey('ak', key, true);
   }
   scheduleFlush();
@@ -522,6 +657,20 @@ async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
 
 async function answerKeyGetWrong(questionText) {
   return getWrongAnswers(questionText);
+}
+
+async function wrongCount() {
+  await ensureLoaded();
+  return Object.keys(_wrongMem).length;
+}
+
+async function wrongClearAll() {
+  await ensureLoaded();
+  for (const key of Object.keys(_wrongMem)) {
+    delete _wrongMem[key];
+    markKey('wrong', key, true);
+  }
+  await flushNow();
 }
 
 async function learnWrong(question, answer) {
@@ -609,11 +758,6 @@ async function seedDefaultBank(force = false) {
 }
 
 // ── Superscript / subscript / Moodle image normalization ────────────────────
-//  `cleanDOMToAI` in the reference toolkit turns <sup>/<sub> markup into the
-//  real unicode characters so "2<sup>3</sup>" reads exactly like a typed "2³".
-//  `unscriptDigits()` then folds both forms back to plain digits for matching,
-//  and attempt-specific pluginfile.php URLs collapse into a stable
-//  `[moodle-asset:<filename>]` token, so the same item matches across attempts.
 const SUP_MAP = {
   '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
   '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ', 'i': 'ⁱ', 'x': 'ˣ', 'y': 'ʸ', 'm': 'ᵐ',
@@ -636,12 +780,8 @@ function unscriptDigits(str) {
   return String(str).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]/g, (ch) => UNSCRIPT_DIGITS[ch] || ch);
 }
 
-// Moodle rewrites the context/attempt id inside every pluginfile.php URL, so the
-// raw src can never match between attempts — the filename is stable. The path
-// prefix varies (`/pluginfile.php`, `/2612/pluginfile.php`, ...).
 const MOODLE_ASSET_SRC = '(?:https?:\\/\\/[^\\s"\']*?)?\\/pluginfile\\.php\\/\\d+\\/question\\/(?:answer|questiontext|feedback)\\/\\d+(?:\\/\\d+)?\\/([^?#\\s"\']+)';
 const MOODLE_ASSET_RE = new RegExp(MOODLE_ASSET_SRC, 'i');
-// Full URL form: the `?forcedownload=1` / `#...` tail is attempt noise too.
 const MOODLE_ASSET_ANY_RE = new RegExp(MOODLE_ASSET_SRC + '(?:[?#][^\\s"\']*)?', 'gi');
 
 /** Stable `[moodle-asset:<filename>]` token for a Moodle question file URL. */
@@ -657,10 +797,8 @@ function moodleAssetToken(src) {
 // ── Utility: norm_text port ────────────────────────────────────────────────
 function normText(s) {
   s = (s || '').toLowerCase();
-  // Attempt-independent image token (URL or already-written token form).
   s = s.replace(MOODLE_ASSET_ANY_RE, ' moodle asset $1 ');
   s = s.replace(/\[\s*moodle\s*-\s*asset\s*:\s*([^\]]+)\]/g, ' moodle asset $1 ');
-  // 2³ / 10₂ must fold to 23 / 102 before non-ASCII characters are stripped.
   s = unscriptDigits(s);
   s = s.replace(/^(question\s*)?\d+[.)]\s*/, '');
   s = s.replace(/\bselect one\b|\bchoose\.\.\.|\btrue or false\b/g, '');
@@ -694,22 +832,17 @@ function similarity(a, b) {
 }
 
 // ── GitHub Contents API helpers ─────────────────────────────────────────────
-//  Shared by the service worker (background.js) and the options page
-//  (options.js), both of which include this file.
-//
-//  Three GitHub quirks matter here:
-//   1. The metadata endpoint must be requested with the JSON media type
-//      (`application/vnd.github+json`); requesting `...raw+json` returns the
-//      file body instead of the JSON envelope, so `data.sha` is missing and the
-//      subsequent PUT fails with 422 "sha wasn't supplied".
-//   2. Base64 payloads carry UTF-8 bytes. `atob()` yields one char per byte, so
-//      decoding with TextDecoder (and encoding with TextEncoder) keeps `²`,
-//      `₂`, emoji, etc. intact instead of producing mojibake.
-//   3. GET /contents only inlines `content` for files up to 1 MB. Above that
-//      GitHub answers with `"encoding": "none"` and an empty `content`, so the
-//      body has to come from the Git blobs API (up to 100 MB) or `download_url`.
-
 const GITHUB_API_ROOT = 'https://api.github.com';
+
+/** Encode each path segment separately so nested paths like "data/bank.json" preserve '/'. */
+function encodeGitHubPath(path) {
+  return String(path || 'bank.json')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+}
 
 /** Decode a Base64 payload (Contents API / Git blob API) into a UTF-8 string. */
 function decodeBase64Utf8(b64) {
@@ -722,7 +855,7 @@ function decodeBase64Utf8(b64) {
 /** Encode a UTF-8 string into Base64 (btoa alone throws on non-Latin1 input). */
 function encodeBase64Utf8(str) {
   const bytes = new TextEncoder().encode(str == null ? '' : String(str));
-  const CHUNK = 0x8000; // String.fromCharCode.apply() has an argument-count limit
+  const CHUNK = 0x8000;
   let binary = '';
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
@@ -730,7 +863,6 @@ function encodeBase64Utf8(str) {
   return btoa(binary);
 }
 
-// Legacy names kept so older call sites keep working.
 function b64ToUtf8(b64) { return decodeBase64Utf8(b64); }
 function utf8ToB64(text) { return encodeBase64Utf8(text); }
 
@@ -758,12 +890,6 @@ async function gitHubErrorDetail(resp) {
   }
 }
 
-/**
- * Read the raw text behind a Contents API metadata response.
- * Inline Base64 is used when GitHub sends it; files over 1 MB (`encoding:
- * "none"`) are read from the Git blobs API, with `download_url` as a fallback.
- * Every failure reason is collected so the caller can surface it verbatim.
- */
 async function gitHubReadFileText(owner, repo, token, meta) {
   if (meta.contentB64) {
     return { text: decodeBase64Utf8(meta.contentB64), source: 'contents' };
@@ -773,7 +899,7 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
   if (meta.sha) {
     try {
-      const blobUrl = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/git/blobs/${encodeURIComponent(meta.sha)}`;
+      const blobUrl = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs/${encodeURIComponent(meta.sha)}`;
       const blobResp = await fetch(blobUrl, { headers: gitHubHeaders(token), cache: 'no-store' });
       if (!blobResp.ok) {
         const detail = await gitHubErrorDetail(blobResp);
@@ -794,8 +920,6 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
   if (meta.downloadUrl) {
     try {
-      // raw.githubusercontent.com serves the file as text; the token is still
-      // required for private repositories.
       const rawResp = await fetch(meta.downloadUrl, {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
         cache: 'no-store',
@@ -815,18 +939,10 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
 /**
  * Read a JSON file from a GitHub repo via the Contents API.
- *
- * Returns { sha, content, missing, parseError, size, source }:
- *  - `content` is the parsed JSON object (null when absent or unparsable)
- *  - `parseError` carries the exact JSON.parse/HTTP/decoding failure, never
- *    masked as "unparsable"
- *  - `missing` is true on 404 and `source` records where the body came from
- *    ('contents' | 'blob' | 'download_url' | 'empty' | 'error' | 'missing')
- *
- * Throws only when the metadata request itself fails (non-404 HTTP error).
  */
 async function gitHubGetFile(owner, repo, path, token) {
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?t=${Date.now()}`;
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?t=${Date.now()}`;
   const resp = await fetch(url, { headers: gitHubHeaders(token), cache: 'no-store' });
   if (resp.status === 404) {
     return { sha: null, content: null, missing: true, parseError: '', size: 0, source: 'missing' };
@@ -886,33 +1002,39 @@ async function gitHubGetFile(owner, repo, path, token) {
 
 /**
  * Create or update a JSON file via the Contents API.
- * Always sends the current `sha` when updating (omit only for a brand-new
- * file). If the server rejects the stale sha with 409/422, re-fetch the latest
- * sha once and retry. Returns { ok, status, message }.
+ * On 409/422 (stale sha), re-fetches the latest remote file and, when
+ * `onConflictMerge(latestMeta)` is provided, re-merges before retrying so
+ * concurrent updates from another device are never overwritten.
  */
-async function gitHubPutJson(owner, repo, path, token, data, message, sha) {
+async function gitHubPutJson(owner, repo, path, token, data, message, sha, onConflictMerge = null) {
   const headers = gitHubHeaders(token);
   headers['Content-Type'] = 'application/json';
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
-  // UTF-8 aware: multi-byte characters (², ₂, emoji) survive the round trip.
-  const content = encodeBase64Utf8(JSON.stringify(data, null, 2));
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`;
 
-  const doPut = (fileSha) => {
-    const payload = { message, content };
-    if (fileSha) payload.sha = fileSha; // Omit only when creating a new file.
+  const doPut = (bodyData, fileSha) => {
+    const payload = {
+      message,
+      content: encodeBase64Utf8(JSON.stringify(bodyData, null, 2)),
+    };
+    if (fileSha) payload.sha = fileSha;
     return fetch(url, { method: 'PUT', headers, body: JSON.stringify(payload) });
   };
 
-  let resp = await doPut(sha);
+  let resp = await doPut(data, sha);
   if (resp.status === 409 || resp.status === 422) {
-    // Stale sha: re-fetch the latest metadata once and retry the PUT.
-    let latestSha = null;
-    try {
-      latestSha = (await gitHubGetFile(owner, repo, path, token)).sha;
-    } catch (e) {
-      latestSha = null;
+    const latestMeta = await gitHubGetFile(owner, repo, path, token);
+    if (!latestMeta.missing && (!latestMeta.content || typeof latestMeta.content !== 'object' || Array.isArray(latestMeta.content))) {
+      return {
+        ok: false,
+        status: resp.status,
+        message: `Conflict retry aborted: remote ${path} could not be parsed${latestMeta.parseError ? ' (' + latestMeta.parseError + ')' : ''}`,
+      };
     }
-    resp = await doPut(latestSha);
+    const mergedData = typeof onConflictMerge === 'function'
+      ? await onConflictMerge(latestMeta)
+      : data;
+    resp = await doPut(mergedData, latestMeta.sha);
   }
 
   if (resp.ok) return { ok: true, status: resp.status, message: '' };
@@ -931,10 +1053,10 @@ function doFlush() {
       STORAGE_KEYS.WRONG,
       STORAGE_KEYS.SEARCH,
     ]);
-    // Synchronous merge section: no await between merge and set().
     _answerKeyMem = overlayPending('ak', validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {}), _answerKeyMem);
     _wrongMem = overlayPending('wrong', validateWrong(stored[STORAGE_KEYS.WRONG] || {}), _wrongMem);
     _searchMem = overlayPending('search', validateSearch(stored[STORAGE_KEYS.SEARCH] || {}), _searchMem);
+    _rebuildTokenIndex();
     for (const kind of ['ak', 'wrong', 'search']) {
       _dirty[kind].clear();
       _deleted[kind].clear();

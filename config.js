@@ -1,6 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  CONFIG — defaults + chrome.storage.sync overlay
-//  Ported verbatim from bot.py + answerkey.py environment variables.
+//  CONFIG — single source of truth for defaults, secret/sync split, and live
+//  cross-context updates.
+//
+//  Non-secret preferences live in chrome.storage.sync; API keys and GitHub
+//  tokens live exclusively in chrome.storage.local (migrated automatically
+//  from older sync installations so existing users lose nothing).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULTS = Object.freeze({
@@ -17,8 +21,7 @@ const DEFAULTS = Object.freeze({
   GITHUB_BANK_REPO: '',
   GITHUB_BANK_PATH: 'bank.json',
   GITHUB_SYNC_TOKEN: '',
-  // Legacy alias. The options page writes `GITHUB_SYNC_TOKEN`; the sync code
-  // accepts either (the primary key wins) so older saved settings keep working.
+  // Legacy alias kept so older saved settings migrate cleanly.
   GITHUB_BANK_TOKEN: '',
 
   // OpenRouter
@@ -39,7 +42,7 @@ const DEFAULTS = Object.freeze({
   OLLAMA_MODEL: 'qwen2.5:7b',
   OLLAMA_VISION_MODEL: '',
   OLLAMA_API_KEY: '',
-  OLLAMA_NUM_CTX: 4096,
+  OLLAMA_NUM_CTX: 16384,
   OLLAMA_KEEP_ALIVE: '10m',
   OLLAMA_TIMEOUT_MS: 60000,
 
@@ -102,66 +105,205 @@ const DEFAULTS = Object.freeze({
   BOT_ENABLED: true,
 });
 
+const SECRET_CONFIG_KEYS = Object.freeze([
+  'CUSTOM_API_KEY',
+  'GEMINI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OLLAMA_API_KEY',
+  'GITHUB_SYNC_TOKEN',
+  'GITHUB_BANK_TOKEN',
+]);
+
+const SECRET_CONFIG_SET = new Set(SECRET_CONFIG_KEYS);
 const PLACEHOLDER_RE = /answer\s*\d+\s*[\.\)]?\s*question\s*\d+/gi;
 
 // In-memory merged config.
 let _merged = { ...DEFAULTS };
 
-/**
- * Load settings from chrome.storage.sync and merge with defaults.
- * Called once at startup by background.js and content.js.
- */
-async function loadConfig() {
+function _storageGet(area, keys) {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(null, (items) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[config] storage.sync error:', chrome.runtime.lastError.message);
-        resolve({ ...DEFAULTS });
-        return { ...DEFAULTS };
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area]) {
+        resolve({});
+        return;
       }
-      _merged = { ...DEFAULTS };
-      for (const [k, v] of Object.entries(items)) {
-        if (k in DEFAULTS && v !== undefined && v !== null) {
-          _merged[k] = v;
+      chrome.storage[area].get(keys, (items) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          console.warn(`[config] storage.${area} get error:`, chrome.runtime.lastError.message);
+          resolve({});
+          return;
         }
+        resolve(items || {});
+      });
+    } catch (error) {
+      resolve({});
+    }
+  });
+}
+
+function _storageSet(area, values) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area]) {
+        resolve();
+        return;
       }
-      const geminiModel = String(_merged.GEMINI_MODEL || '').trim();
-      if (!geminiModel || geminiModel === 'gemini-2.5-flash') {
-        _merged.GEMINI_MODEL = 'gemini-3.8-flash';
-        chrome.storage.sync.set({ GEMINI_MODEL: _merged.GEMINI_MODEL });
+      chrome.storage[area].set(values, () => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function _storageRemove(area, keys) {
+  return new Promise((resolve) => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area] ||
+          typeof chrome.storage[area].remove !== 'function') {
+        resolve();
+        return;
       }
-      const ollamaUrl = String(_merged.OLLAMA_URL || '').trim();
-      const ollamaModel = String(_merged.OLLAMA_MODEL || '').trim();
-      const ollamaUpdates = {};
-      if (!ollamaUrl) {
-        _merged.OLLAMA_URL = DEFAULTS.OLLAMA_URL;
-        ollamaUpdates.OLLAMA_URL = _merged.OLLAMA_URL;
-      }
-      if (!ollamaModel || ollamaModel === 'gemma4:e2b') {
-        _merged.OLLAMA_MODEL = DEFAULTS.OLLAMA_MODEL;
-        ollamaUpdates.OLLAMA_MODEL = _merged.OLLAMA_MODEL;
-      }
-      if (Object.keys(ollamaUpdates).length) chrome.storage.sync.set(ollamaUpdates);
-      resolve(_merged);
-    });
+      chrome.storage[area].remove(keys, () => {
+        void (chrome.runtime && chrome.runtime.lastError);
+        resolve();
+      });
+    } catch (error) {
+      resolve();
+    }
   });
 }
 
 /**
- * Save a set of config keys to storage.sync.
+ * Load settings from chrome.storage.sync (preferences) + chrome.storage.local
+ * (secrets & BOT_ENABLED) and merge with DEFAULTS.
+ * Transparently migrates any legacy secrets found in chrome.storage.sync into
+ * chrome.storage.local and removes them from sync.
+ */
+async function loadConfig() {
+  const [syncItems, localItems] = await Promise.all([
+    _storageGet('sync', null),
+    _storageGet('local', [...SECRET_CONFIG_KEYS, 'BOT_ENABLED']),
+  ]);
+
+  _merged = { ...DEFAULTS };
+
+  // Apply non-secret preferences from sync.
+  for (const [k, v] of Object.entries(syncItems)) {
+    if (k in DEFAULTS && !SECRET_CONFIG_SET.has(k) && v !== undefined && v !== null) {
+      _merged[k] = v;
+    }
+  }
+
+  // Apply secrets from local, migrating any legacy values still in sync.
+  const secretsToMigrate = {};
+  const legacySyncToRemove = [];
+  for (const key of SECRET_CONFIG_KEYS) {
+    const localVal = localItems[key];
+    const syncVal = syncItems[key];
+    if (typeof localVal === 'string' && localVal.length > 0) {
+      _merged[key] = localVal;
+      if (syncVal !== undefined) legacySyncToRemove.push(key);
+    } else if (typeof syncVal === 'string' && syncVal.length > 0) {
+      _merged[key] = syncVal;
+      secretsToMigrate[key] = syncVal;
+      legacySyncToRemove.push(key);
+    } else if (localVal !== undefined && localVal !== null) {
+      _merged[key] = localVal;
+    }
+  }
+
+  // Legacy token alias: promote GITHUB_BANK_TOKEN -> GITHUB_SYNC_TOKEN if unset.
+  if (!_merged.GITHUB_SYNC_TOKEN && _merged.GITHUB_BANK_TOKEN) {
+    _merged.GITHUB_SYNC_TOKEN = _merged.GITHUB_BANK_TOKEN;
+    secretsToMigrate.GITHUB_SYNC_TOKEN = _merged.GITHUB_BANK_TOKEN;
+  }
+
+  // Local BOT_ENABLED wins for instant popup toggles.
+  if (localItems.BOT_ENABLED !== undefined) {
+    _merged.BOT_ENABLED = localItems.BOT_ENABLED !== false;
+  }
+
+  // Normalize deprecated/blank model defaults without locking user overrides.
+  const syncMigrations = {};
+  const geminiModel = String(_merged.GEMINI_MODEL || '').trim();
+  if (!geminiModel || geminiModel === 'gemini-2.5-flash') {
+    _merged.GEMINI_MODEL = DEFAULTS.GEMINI_MODEL;
+    syncMigrations.GEMINI_MODEL = _merged.GEMINI_MODEL;
+  }
+  const ollamaUrl = String(_merged.OLLAMA_URL || '').trim();
+  const ollamaModel = String(_merged.OLLAMA_MODEL || '').trim();
+  if (!ollamaUrl) {
+    _merged.OLLAMA_URL = DEFAULTS.OLLAMA_URL;
+    syncMigrations.OLLAMA_URL = _merged.OLLAMA_URL;
+  }
+  if (!ollamaModel || ollamaModel === 'gemma4:e2b') {
+    _merged.OLLAMA_MODEL = DEFAULTS.OLLAMA_MODEL;
+    syncMigrations.OLLAMA_MODEL = _merged.OLLAMA_MODEL;
+  }
+
+  if (Object.keys(secretsToMigrate).length) {
+    await _storageSet('local', secretsToMigrate).catch(() => {});
+  }
+  if (legacySyncToRemove.length) {
+    await _storageRemove('sync', legacySyncToRemove);
+  }
+  if (Object.keys(syncMigrations).length) {
+    await _storageSet('sync', syncMigrations).catch(() => {});
+  }
+
+  return _merged;
+}
+
+/**
+ * Save a set of config keys: secrets go exclusively to chrome.storage.local,
+ * preferences go to chrome.storage.sync. Throws if storage writes fail.
  */
 async function saveConfig(updates) {
-  return new Promise((resolve) => {
-    const filtered = {};
-    for (const [k, v] of Object.entries(updates)) {
-      if (k in DEFAULTS) {
-        filtered[k] = v;
-        _merged[k] = v;
-      }
+  const syncUpdates = {};
+  const localUpdates = {};
+  const syncSecretsToRemove = [];
+
+  for (const [k, v] of Object.entries(updates || {})) {
+    if (!(k in DEFAULTS)) continue;
+    _merged[k] = v;
+    if (SECRET_CONFIG_SET.has(k)) {
+      localUpdates[k] = v;
+      syncSecretsToRemove.push(k);
+    } else {
+      syncUpdates[k] = v;
+      if (k === 'BOT_ENABLED') localUpdates[k] = v;
     }
-    chrome.storage.sync.set(filtered, () => {
-      resolve();
-    });
+  }
+
+  if (Object.keys(localUpdates).length) {
+    await _storageSet('local', localUpdates);
+  }
+  if (Object.keys(syncUpdates).length) {
+    await _storageSet('sync', syncUpdates);
+  }
+  if (syncSecretsToRemove.length) {
+    await _storageRemove('sync', syncSecretsToRemove);
+  }
+}
+
+// Keep every context's in-memory `_merged` config synchronized live when
+// Options, popup, or another tab updates settings or API keys.
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (!changes || (area !== 'sync' && area !== 'local')) return;
+    for (const [key, change] of Object.entries(changes)) {
+      if (!(key in DEFAULTS)) continue;
+      if (area === 'local' && !SECRET_CONFIG_SET.has(key) && key !== 'BOT_ENABLED') continue;
+      if (area === 'sync' && SECRET_CONFIG_SET.has(key)) continue;
+      const next = change ? change.newValue : undefined;
+      _merged[key] = next !== undefined && next !== null ? next : DEFAULTS[key];
+    }
   });
 }
 
@@ -186,4 +328,20 @@ function ollamaTimeoutMs(value) {
   let ms = Number(value) || Number(_merged.OLLAMA_TIMEOUT_MS) || 60000;
   if (ms < 1000) ms *= 1000;
   return Math.max(ms, 30000);
+}
+
+/**
+ * True when `hostname` matches the configured MOODLE_URL host or amaes.com.
+ */
+function moodleAllowedHost(hostname) {
+  const host = String(hostname || '').toLowerCase().trim();
+  if (!host) return false;
+  if (host === 'amaes.com' || host.endsWith('.amaes.com')) return true;
+  try {
+    const configured = new URL(String(_merged.MOODLE_URL || DEFAULTS.MOODLE_URL)).hostname.toLowerCase();
+    if (!configured) return false;
+    return host === configured || host.endsWith('.' + configured);
+  } catch (error) {
+    return false;
+  }
 }

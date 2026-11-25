@@ -36,7 +36,10 @@ const metadata = `// ==UserScript==
 // @connect      raw.githubusercontent.com
 // @connect      generativelanguage.googleapis.com
 // @connect      api.deepseek.com
+// @connect      api.freellmapi.com
 // @connect      openrouter.ai
+// @connect      html.duckduckgo.com
+// @connect      en.wikipedia.org
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      amauoed.com
@@ -56,6 +59,8 @@ let qbTmLastError = null;
 const qbTmStorageListeners = new Set();
 const qbTmWatched = new Set();
 const qbTmRuntimeListeners = new Set();
+const qbTmGeminiKeyState = new Map();
+let qbTmGeminiKeyCursor = 0;
 
 function qbTmGMGet(key, fallback) {
   return Promise.resolve(GM_getValue(key, fallback));
@@ -220,7 +225,7 @@ function qbTmRequest(options) {
       responseType: options.responseType,
       onload: (response) => resolve({
         status: response.status,
-        responseText: response.responseText || '',
+        responseText: response.responseType === 'arraybuffer' ? '' : (response.responseText || ''),
         response: response.response,
         responseHeaders: response.responseHeaders || '',
         finalUrl: response.finalUrl || options.url,
@@ -253,16 +258,37 @@ function qbTmBase64FromUtf8(value) {
   return btoa(binary);
 }
 
-async function qbTmGitHubSettings(payload) {
-  const settings = await chrome.storage.sync.get([
-    'GITHUB_BANK_OWNER', 'GITHUB_BANK_REPO', 'GITHUB_BANK_PATH',
-    'GITHUB_SYNC_TOKEN', 'GITHUB_BANK_TOKEN',
+function qbTmBase64FromArrayBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+async function qbTmReadAllSettings() {
+  const [sync, local] = await Promise.all([
+    chrome.storage.sync.get(null),
+    chrome.storage.local.get([
+      'CUSTOM_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY',
+      'OLLAMA_API_KEY', 'GITHUB_SYNC_TOKEN', 'GITHUB_BANK_TOKEN', 'DEEPSEEK_API_KEY',
+    ]),
   ]);
+  const merged = { ...sync };
+  for (const [k, v] of Object.entries(local || {})) {
+    if (v !== undefined && v !== '') merged[k] = v;
+  }
+  return merged;
+}
+
+async function qbTmGitHubSettings(payload) {
+  const settings = await qbTmReadAllSettings();
   return {
-    owner: String(payload.owner || settings.GITHUB_BANK_OWNER || '').trim(),
-    repo: String(payload.repo || settings.GITHUB_BANK_REPO || '').trim(),
-    path: String(payload.path || settings.GITHUB_BANK_PATH || 'bank.json').trim() || 'bank.json',
-    token: String(payload.token || settings.GITHUB_SYNC_TOKEN || settings.GITHUB_BANK_TOKEN || '').trim(),
+    owner: String((payload && payload.owner) || settings.GITHUB_BANK_OWNER || '').trim(),
+    repo: String((payload && payload.repo) || settings.GITHUB_BANK_REPO || '').trim(),
+    path: String((payload && payload.path) || settings.GITHUB_BANK_PATH || 'bank.json').trim() || 'bank.json',
+    token: String((payload && payload.token) || settings.GITHUB_SYNC_TOKEN || settings.GITHUB_BANK_TOKEN || '').trim(),
   };
 }
 
@@ -273,7 +299,7 @@ function qbTmGitHubHeaders(token) {
 }
 
 async function qbTmGitHubGetFile(settings) {
-  const encodedPath = settings.path.split('/').map(encodeURIComponent).join('/');
+  const encodedPath = settings.path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const url = 'https://api.github.com/repos/' + encodeURIComponent(settings.owner) + '/'
     + encodeURIComponent(settings.repo) + '/contents/' + encodedPath;
   const response = await qbTmRequest({ url, headers: qbTmGitHubHeaders(settings.token), timeout: 45000 });
@@ -377,7 +403,7 @@ async function qbTmMergeBank(remote) {
 }
 
 async function qbTmGitHubPut(settings, bank, sha) {
-  const encodedPath = settings.path.split('/').map(encodeURIComponent).join('/');
+  const encodedPath = settings.path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const url = 'https://api.github.com/repos/' + encodeURIComponent(settings.owner) + '/'
     + encodeURIComponent(settings.repo) + '/contents/' + encodedPath;
   const body = {
@@ -438,13 +464,43 @@ async function qbTmSyncBank(payload) {
   return { status: 'ok', added: 0, pushed: count, questions: count };
 }
 
+function qbTmStripHtml(text) {
+  return String(text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function qbTmParseAnswerKeyHtml(html, maxHits) {
+  const hits = [];
+  const seen = new Set();
+  const blocks = String(html || '').split('class="card mb-2 bg-secondary"');
+  for (let i = 1; i < blocks.length && hits.length < maxHits; i += 1) {
+    const block = blocks[i];
+    const questionMatch = block.match(/class="mb-2">([\s\S]*?)<\/div>/);
+    const answerMatch = block.match(/<strong>\s*([\s\S]*?)\s*<span class="chip bg-success">Correct/);
+    const courseMatch = block.match(/chip bg-primary[^>]*>([\s\S]*?)<\/div>/);
+    if (!(questionMatch && answerMatch)) continue;
+    const answer = qbTmStripHtml(answerMatch[1]).replace(/\s*Correct\s*$/i, '').trim();
+    if (!answer || seen.has(answer.toLowerCase())) continue;
+    seen.add(answer.toLowerCase());
+    hits.push({
+      question: qbTmStripHtml(questionMatch[1]),
+      answer,
+      course: courseMatch ? qbTmStripHtml(courseMatch[1]) : '',
+    });
+  }
+  return hits;
+}
+
 async function qbTmProviderRequest(action, payload) {
-  const settings = await chrome.storage.sync.get([
-    'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_API_URL',
-    'GEMINI_API_KEY', 'GEMINI_MODEL',
-    'CUSTOM_API_KEY', 'CUSTOM_API_BASE_URL', 'CUSTOM_MODEL', 'DEEPSEEK_API_KEY',
-    'OLLAMA_URL', 'OLLAMA_MODEL', 'OLLAMA_API_KEY',
-  ]);
+  const settings = await qbTmReadAllSettings();
   const data = payload || {};
   if (action === 'postOpenRouter') {
     const url = settings.OPENROUTER_API_URL || 'https://openrouter.ai/api/v1/chat/completions';
@@ -468,7 +524,7 @@ async function qbTmProviderRequest(action, payload) {
     const deepseekDirect = !settings.CUSTOM_API_KEY && !!settings.DEEPSEEK_API_KEY;
     const base = String(deepseekDirect
       ? 'https://api.deepseek.com/v1'
-      : settings.CUSTOM_API_BASE_URL || '').replace(/\/$/, '');
+      : settings.CUSTOM_API_BASE_URL || 'https://api.freellmapi.com/v1').replace(/\/$/, '');
     if (!base) return { _reqId: data._reqId, error: 'Custom API base URL is not configured' };
     const headers = { 'Content-Type': 'application/json' };
     const apiKey = settings.CUSTOM_API_KEY || settings.DEEPSEEK_API_KEY;
@@ -488,21 +544,50 @@ async function qbTmProviderRequest(action, payload) {
     const keys = String(settings.GEMINI_API_KEY || '').split(/[\s,;]+/).filter(Boolean);
     if (!keys.length) return { _reqId: data._reqId, error: 'Gemini API key is missing' };
     const model = encodeURIComponent(data.model || settings.GEMINI_MODEL || 'gemini-3.8-flash');
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model
-      + ':generateContent?key=' + encodeURIComponent(keys[0]);
-    const response = await qbTmRequest({
-      method: 'POST', url, headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ contents: data.contents || [], generationConfig: data.generationConfig }),
-      timeout: data.timeout || 30000,
-    });
-    const json = qbTmParseJson(response.responseText, 'Gemini');
-    if (response.status < 200 || response.status >= 300) {
-      return { _reqId: data._reqId, status: response.status, error: 'Gemini HTTP ' + response.status + ': ' + response.responseText.slice(0, 300) };
+    const now = Date.now();
+    const cooldownMs = (Number(settings.GEMINI_KEY_COOLDOWN) || 180) * 1000;
+    let tried = 0;
+    let lastStatus = 0;
+    let lastError = '';
+    for (let offset = 0; offset < keys.length; offset += 1) {
+      const idx = (qbTmGeminiKeyCursor + offset) % keys.length;
+      const key = keys[idx];
+      const state = qbTmGeminiKeyState.get(key) || {};
+      if ((state.limitedUntil && state.limitedUntil > now) || (state.invalidUntil && state.invalidUntil > now)) continue;
+      tried += 1;
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model
+        + ':generateContent?key=' + encodeURIComponent(key);
+      const response = await qbTmRequest({
+        method: 'POST', url, headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ contents: data.contents || [], generationConfig: data.generationConfig }),
+        timeout: data.timeout || 30000,
+      });
+      if (response.status >= 200 && response.status < 300) {
+        const json = qbTmParseJson(response.responseText, 'Gemini');
+        qbTmGeminiKeyCursor = (idx + 1) % keys.length;
+        return {
+          _reqId: data._reqId,
+          text: (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts || [])
+            .map((part) => part.text || '').join('').trim(),
+          keyIndex: idx + 1,
+          keyCount: keys.length,
+        };
+      }
+      lastStatus = response.status;
+      lastError = 'Gemini HTTP ' + response.status + ': ' + response.responseText.slice(0, 300);
+      const quota = response.status === 429 || response.status === 503 || (response.status === 403 && /quota|rate/i.test(response.responseText));
+      const invalid = response.status === 401 || (response.status === 400 && /api[ _-]?key not valid|invalid api key/i.test(response.responseText));
+      if (quota) { qbTmGeminiKeyState.set(key, { ...state, limitedUntil: now + cooldownMs }); continue; }
+      if (invalid) { qbTmGeminiKeyState.set(key, { ...state, invalidUntil: now + 24 * 60 * 60 * 1000 }); continue; }
+      return { _reqId: data._reqId, status: response.status, error: lastError };
     }
     return {
       _reqId: data._reqId,
-      text: (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts || [])
-        .map((part) => part.text || '').join('').trim(),
+      status: lastStatus || 429,
+      error: lastError || ('All ' + keys.length + ' Gemini API key(s) are cooling down or invalid'),
+      allKeysLimited: true,
+      keysTried: tried,
+      keyCount: keys.length,
     };
   }
   if (action === 'postOllama') {
@@ -521,38 +606,6 @@ async function qbTmProviderRequest(action, payload) {
   return null;
 }
 
-async function qbTmAskAI(payload) {
-  const input = payload || {};
-  const prompt = String(input.prompt || input.question || input.text || '');
-  const messages = Array.isArray(input.messages) ? input.messages : [{ role: 'user', content: prompt }];
-  const settings = await chrome.storage.sync.get(['GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'CUSTOM_API_KEY', 'DEEPSEEK_API_KEY']);
-  if (settings.OPENROUTER_API_KEY) {
-    const result = await qbTmProviderRequest('postOpenRouter', {
-      body: { model: input.model || 'deepseek/deepseek-chat', messages, temperature: input.temperature || 0.1, max_tokens: input.maxTokens || 512 },
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error && result.choices) return { text: result.choices[0] && result.choices[0].message && result.choices[0].message.content || '', response: result };
-  }
-  if (settings.GEMINI_API_KEY) {
-    const result = await qbTmProviderRequest('postGemini', {
-      contents: messages.map((message) => ({
-        role: message.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) }],
-      })),
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error) return { text: result.text || '', response: result };
-  }
-  if (settings.CUSTOM_API_KEY || settings.DEEPSEEK_API_KEY) {
-    const result = await qbTmProviderRequest('postCustomApi', {
-      body: { model: input.model || 'auto', messages, temperature: input.temperature || 0.1, max_tokens: input.maxTokens || 512 },
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error) return { text: result.choices && result.choices[0] && result.choices[0].message && result.choices[0].message.content || '', response: result };
-  }
-  throw new Error('Configure an OpenRouter/DeepSeek, Gemini, or custom API key in Quiz Bot Settings');
-}
-
 function qbTmSearchWeb(query, maxResults) {
   const term = String(query || '').replace(/\s+/g, ' ').trim();
   if (!term) return Promise.resolve({ text: '' });
@@ -568,9 +621,7 @@ function qbTmSearchWeb(query, maxResults) {
     const pattern = /<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
     let match;
     while ((match = pattern.exec(html)) && snippets.length < limit) {
-      const snippet = match[1].replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ')
-        .replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
-        .replace(/\s+/g, ' ').trim().slice(0, 400);
+      const snippet = qbTmStripHtml(match[1]).slice(0, 400);
       if (snippet && !seen.has(snippet)) {
         seen.add(snippet);
         snippets.push((snippets.length + 1) + '. ' + snippet);
@@ -584,6 +635,8 @@ async function qbTmHandleMessage(message) {
   const action = message && (message.action || message.type);
   const payload = message && (message.payload || message);
   const reqId = message && message._reqId;
+
+  if (action === 'log') return { _reqId: reqId, ok: true };
   if (action === 'GET_CURRENT_TAB_ID') {
     const key = '__qb_tm_tab_id';
     let id = 0;
@@ -605,33 +658,66 @@ async function qbTmHandleMessage(message) {
       return { _reqId: reqId, ...await qbTmPullBank(settings) };
     } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
   }
-  if (action === 'FETCH_URL') {
+  if (action === 'getAnswerKey') {
     try {
-      const url = payload.url || message.url;
-      if (!url) throw new Error('FETCH_URL requires a URL');
+      const q = String(payload.question || '').slice(0, 300);
       const response = await qbTmRequest({
-        method: payload.method || 'GET',
-        url,
-        headers: payload.headers || {},
-        data: payload.body,
-        timeout: payload.timeout || 30000,
+        url: 'https://amauoed.com/search?query=' + encodeURIComponent(q),
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AmaBot/1.0)' },
+        timeout: 6000,
       });
-      return { _reqId: reqId, ...response, text: response.responseText };
-    } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+      const hits = response.status >= 200 && response.status < 300
+        ? qbTmParseAnswerKeyHtml(response.responseText, 4)
+        : [];
+      return { _reqId: reqId, hits };
+    } catch (error) { return { _reqId: reqId, hits: [] }; }
   }
-  if (action === 'SEARCH_WEB_SNIPPETS') {
+  if (action === 'searchWeb' || action === 'SEARCH_WEB_SNIPPETS') {
     const result = await qbTmSearchWeb(payload.query, payload.maxResults);
     return { _reqId: reqId, ...result };
   }
-  if (action === 'ASK_AI') {
-    try { return { _reqId: reqId, ...await qbTmAskAI(payload) }; }
-    catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+  if (action === 'resolveCustomModel') {
+    try {
+      const settings = await qbTmReadAllSettings();
+      const base = String(settings.CUSTOM_API_BASE_URL || 'https://api.freellmapi.com/v1').replace(/\/+$/, '');
+      const headers = { 'Content-Type': 'application/json' };
+      if (settings.CUSTOM_API_KEY) headers.Authorization = 'Bearer ' + settings.CUSTOM_API_KEY;
+      const response = await qbTmRequest({ url: base + '/models', headers, timeout: 10000 });
+      if (response.status < 200 || response.status >= 300) return { _reqId: reqId, model: null };
+      const parsed = qbTmParseJson(response.responseText, 'Custom /models');
+      const list = parsed.data || parsed.models || [];
+      const first = list.find((m) => m && typeof (m.id || m.name || m.model) === 'string');
+      return { _reqId: reqId, model: first ? (first.id || first.name || first.model) : null };
+    } catch (error) { return { _reqId: reqId, model: null }; }
+  }
+  if (action === 'fetchImageBase64') {
+    try {
+      const response = await qbTmRequest({
+        url: payload.url,
+        responseType: 'arraybuffer',
+        timeout: payload.timeout || 10000,
+      });
+      if (response.status < 200 || response.status >= 300 || !response.response) {
+        return { _reqId: reqId, error: 'Image HTTP ' + response.status };
+      }
+      const mimeMatch = String(response.responseHeaders || '').match(/content-type:\s*([^\r\n;]+)/i);
+      const mimeType = mimeMatch && mimeMatch[1].trim().startsWith('image/') ? mimeMatch[1].trim() : 'image/png';
+      return { _reqId: reqId, base64: qbTmBase64FromArrayBuffer(response.response), mimeType };
+    } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+  }
+  if (action === 'checkOllama') {
+    try {
+      const settings = await qbTmReadAllSettings();
+      const base = String(settings.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+      const response = await qbTmRequest({ url: base + '/api/tags', timeout: 2500 });
+      return { _reqId: reqId, ok: response.status >= 200 && response.status < 300 };
+    } catch (error) { return { _reqId: reqId, ok: false }; }
   }
   if (action === 'postOpenRouter' || action === 'postGemini' || action === 'postCustomApi' || action === 'postOllama') {
     try { return await qbTmProviderRequest(action, { ...payload, _reqId: reqId }); }
     catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
   }
-  if (action === 'log' || action === 'CHECK_EXTENSION_UPDATE' || action === 'AUTO_HARVEST') {
+  if (action === 'CHECK_EXTENSION_UPDATE' || action === 'AUTO_HARVEST') {
     return { _reqId: reqId, status: 'unavailable' };
   }
   return { _reqId: reqId, error: 'Unsupported userscript action: ' + String(action || '') };
@@ -685,17 +771,18 @@ try {
     configurable: true,
     get() { return qbTmLastError; },
   });
-} catch (error) { /* a partial browser chrome object may expose a non-configurable property */ }
+} catch (error) { /* non-configurable in some browsers */ }
 
 const QB_TM_SETTINGS = [
+  ['MOODLE_URL', 'Moodle base URL'],
   ['GITHUB_BANK_OWNER', 'GitHub owner'],
   ['GITHUB_BANK_REPO', 'Question bank repository'],
   ['GITHUB_BANK_PATH', 'Question bank file path'],
   ['GITHUB_SYNC_TOKEN', 'GitHub token (repo contents access)'],
   ['OPENROUTER_API_KEY', 'OpenRouter API key'],
-  ['DEEPSEEK_API_KEY', 'DeepSeek API key'],
-  ['OPENROUTER_MODEL', 'OpenRouter / DeepSeek model'],
+  ['OPENROUTER_MODEL', 'OpenRouter model'],
   ['GEMINI_API_KEY', 'Gemini API key(s)'],
+  ['GEMINI_MODEL', 'Gemini model'],
   ['CUSTOM_API_BASE_URL', 'Custom API base URL'],
   ['CUSTOM_API_KEY', 'Custom API key'],
   ['CUSTOM_MODEL', 'Custom API model'],
@@ -743,7 +830,7 @@ function qbTmOpenSettings() {
   });
   document.body.appendChild(overlay);
 
-  GM_addStyle('#qb-tm-settings-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:20px;font:14px system-ui,sans-serif;color:#e2e8f0}#qb-tm-settings-dialog{position:relative;width:min(620px,100%);max-height:90vh;overflow:auto;background:#111b31;border:1px solid #475569;border-radius:14px;padding:24px;box-shadow:0 20px 70px #000b}#qb-tm-settings-title{margin:0 40px 18px 0;color:#ffb347;font-size:20px}.qb-tm-close{position:absolute;right:14px;top:12px;background:#253550;color:#fff;border:0;border-radius:6px;font-size:22px;width:34px;height:34px;cursor:pointer}#qb-tm-settings-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qb-tm-field{display:flex;flex-direction:column;gap:5px;color:#cbd5e1}.qb-tm-field input{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #475569;border-radius:7px;background:#0b1220;color:#f8fafc;font:inherit}.qb-tm-field:nth-child(4),.qb-tm-field:nth-child(5),.qb-tm-field:nth-child(7),.qb-tm-field:nth-child(8),.qb-tm-field:nth-child(9),.qb-tm-field:nth-child(10){grid-column:1/-1}.qb-tm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}.qb-tm-actions button{border:0;border-radius:7px;padding:10px 16px;color:#fff;font-weight:600;cursor:pointer}.qb-tm-primary{background:#2563eb}.qb-tm-secondary{background:#0f766e}#qb-tm-settings-status{min-height:1.4em;margin:12px 0 0;color:#86efac}#qb-tm-settings-status.error{color:#fca5a5}@media(max-width:560px){#qb-tm-settings-fields{grid-template-columns:1fr}.qb-tm-field{grid-column:1/-1}}');
+  GM_addStyle('#qb-tm-settings-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:20px;font:14px system-ui,sans-serif;color:#e2e8f0}#qb-tm-settings-dialog{position:relative;width:min(620px,100%);max-height:90vh;overflow:auto;background:#111b31;border:1px solid #475569;border-radius:14px;padding:24px;box-shadow:0 20px 70px #000b}#qb-tm-settings-title{margin:0 40px 18px 0;color:#ffb347;font-size:20px}.qb-tm-close{position:absolute;right:14px;top:12px;background:#253550;color:#fff;border:0;border-radius:6px;font-size:22px;width:34px;height:34px;cursor:pointer}#qb-tm-settings-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qb-tm-field{display:flex;flex-direction:column;gap:5px;color:#cbd5e1}.qb-tm-field input{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #475569;border-radius:7px;background:#0b1220;color:#f8fafc;font:inherit}.qb-tm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}.qb-tm-actions button{border:0;border-radius:7px;padding:10px 16px;color:#fff;font-weight:600;cursor:pointer}.qb-tm-primary{background:#2563eb}.qb-tm-secondary{background:#0f766e}#qb-tm-settings-status{min-height:1.4em;margin:12px 0 0;color:#86efac}#qb-tm-settings-status.error{color:#fca5a5}@media(max-width:560px){#qb-tm-settings-fields{grid-template-columns:1fr}}');
   for (const [key, label] of QB_TM_SETTINGS) {
     const wrapper = document.createElement('label');
     wrapper.className = 'qb-tm-field';
@@ -759,15 +846,14 @@ function qbTmOpenSettings() {
   }
   const fill = async () => {
     try {
+      const current = typeof loadConfig === 'function' ? await loadConfig() : await qbTmReadAllSettings();
       for (const input of form.querySelectorAll('input[data-key]')) {
-        input.value = await qbTmGMGet(QB_TM_SYNC_PREFIX + input.dataset.key, '');
-        if (input.dataset.key === 'GITHUB_BANK_PATH' && !input.value) input.value = 'bank.json';
-        if (input.dataset.key === 'OPENROUTER_MODEL' && !input.value) input.value = 'deepseek/deepseek-v4.1-flash';
-        if (input.dataset.key === 'CUSTOM_API_BASE_URL' && !input.value) input.value = 'https://api.freellmapi.com/v1';
+        const key = input.dataset.key;
+        input.value = current[key] != null ? String(current[key]) : '';
       }
     } catch (error) {
-    status.textContent = 'Could not load settings: ' + error.message;
-    status.classList.add('error');
+      status.textContent = 'Could not load settings: ' + error.message;
+      status.classList.add('error');
     }
   };
   const collect = () => {
@@ -780,7 +866,8 @@ function qbTmOpenSettings() {
     status.classList.remove('error');
     status.textContent = 'Saving settings...';
     try {
-      await chrome.storage.sync.set(collect());
+      if (typeof saveConfig === 'function') await saveConfig(collect());
+      else await chrome.storage.sync.set(collect());
       if (typeof window.__qbTmReloadConfig === 'function') await window.__qbTmReloadConfig();
       status.textContent = 'Settings saved across your Tampermonkey tabs.';
     } catch (error) {
@@ -793,7 +880,7 @@ function qbTmOpenSettings() {
     status.classList.remove('error');
     status.textContent = 'Syncing question bank with GitHub...';
     try {
-      await chrome.storage.sync.set(collect());
+      if (typeof saveConfig === 'function') await saveConfig(collect());
       if (typeof window.__qbTmReloadConfig === 'function') await window.__qbTmReloadConfig();
       const result = await qbTmHandleMessage({ action: 'SYNC_GITHUB_BANK' });
       if (result.error) throw new Error(result.error);
@@ -830,53 +917,55 @@ function qbTmAddGearButton(header) {
 }
 `;
 
-const amaesSources = ['config.js', 'storage.js', 'providers.js', 'content.js']
+// Shared core bundled ONCE instead of duplicated across branches.
+const sharedCore = ['config.js', 'storage.js']
   .map((name) => `\n;\n${source[name]}\n`)
   .join('');
-const universalSources = ['config.js', 'storage.js', 'universal-harvester.js']
+const moodleBranch = ['providers.js', 'content.js']
   .map((name) => `\n;\n${source[name]}\n`)
   .join('');
+const harvesterBranch = `\n;\n${source['universal-harvester.js']}\n`;
 const mascot = `\n;\n${source['mascot.js']}\n`;
 
 const routing = `
-const qbTmIsAmaes = location.hostname.toLowerCase() === 'amaes.com'
-  || location.hostname.toLowerCase().endsWith('.amaes.com');
-if (qbTmIsAmaes) {
-  (function () {
-${amaesSources}
-  window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
-  window.__qbTmReloadConfig = loadConfig;
-  const qbTmMoodleGearTimer = setInterval(() => {
-    try {
-      if (typeof _hudShadow !== 'undefined' && _hudShadow) {
-        qbTmAddGearButton(_hudShadow.getElementById('hud-header'));
-        clearInterval(qbTmMoodleGearTimer);
-      }
-    } catch (error) { console.warn('[Quiz Bot] Could not add settings gear:', error); }
-  }, 250);
-  })();
-} else {
-  (function () {
-${universalSources}
-  window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
-  window.__qbTmReloadConfig = loadConfig;
-  const qbTmHarvesterGearTimer = setInterval(() => {
-    const header = document.getElementById('qb-hud-header');
-    if (header) {
-      qbTmAddGearButton(header);
-      clearInterval(qbTmHarvesterGearTimer);
-    }
-  }, 250);
-  })();
-}
+${sharedCore}
+window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
+window.__qbTmReloadConfig = loadConfig;
+
+loadConfig().then(() => {
+  const isMoodle = moodleAllowedHost(location.hostname);
+  if (isMoodle) {
+    (function () {
+${moodleBranch}
+      const qbTmMoodleGearTimer = setInterval(() => {
+        try {
+          if (typeof _hudShadow !== 'undefined' && _hudShadow) {
+            qbTmAddGearButton(_hudShadow.getElementById('hud-header'));
+            clearInterval(qbTmMoodleGearTimer);
+          }
+        } catch (error) { console.warn('[Quiz Bot] Could not add settings gear:', error); }
+      }, 250);
+    })();
+  } else {
+    (function () {
+${harvesterBranch}
+      const qbTmHarvesterGearTimer = setInterval(() => {
+        const header = window.__qbHarvesterHeader || document.getElementById('qb-hud-header');
+        if (header) {
+          qbTmAddGearButton(header);
+          clearInterval(qbTmHarvesterGearTimer);
+        }
+      }, 250);
+    })();
+  }
 ${mascot}
+});
 `;
 
 const output = `${metadata}
 (function () {
 'use strict';
 ${shim}
-GM_addStyle(QB_TM_HUD_CSS);
 ${routing}
 })();
 `;

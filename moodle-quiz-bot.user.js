@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Moodle Quiz Bot + 3-Cat Squad
 // @namespace    https://github.com/ambotlangnimo/moodle-quiz-bot
-// @version      3.6.0
+// @version      3.7.0
 // @description  Auto-answers Moodle quizzes, harvests study sites, syncs with GitHub Question Bank, and features a 3-Cat Pixel Squad.
 // @match        *://*/*
 // @grant        GM_getValue
@@ -16,7 +16,10 @@
 // @connect      raw.githubusercontent.com
 // @connect      generativelanguage.googleapis.com
 // @connect      api.deepseek.com
+// @connect      api.freellmapi.com
 // @connect      openrouter.ai
+// @connect      html.duckduckgo.com
+// @connect      en.wikipedia.org
 // @connect      127.0.0.1
 // @connect      localhost
 // @connect      amauoed.com
@@ -28,7 +31,7 @@
 (function () {
 'use strict';
 
-const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.6.0","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.","permissions":["storage","tabs","unlimitedStorage"],"host_permissions":["<all_urls>"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["<all_urls>"],"exclude_matches":["https://*.amaes.com/*"],"css":["hud.css"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
+const QB_TM_MANIFEST = {"manifest_version":3,"name":"Moodle Quiz Bot","version":"3.7.0","description":"Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot.","permissions":["storage","tabs","unlimitedStorage","alarms","sidePanel","activeTab","scripting"],"host_permissions":["https://*.amaes.com/*","https://amauoed.com/*","https://*.amauoed.com/*","https://api.github.com/*","https://raw.githubusercontent.com/*","https://api.freellmapi.com/*","https://generativelanguage.googleapis.com/*","https://openrouter.ai/*","https://html.duckduckgo.com/*","https://en.wikipedia.org/*","http://127.0.0.1/*","http://localhost/*"],"optional_host_permissions":["https://*/*","http://*/*"],"content_scripts":[{"matches":["https://*.amaes.com/*"],"js":["config.js","storage.js","providers.js","content.js","mascot.js"],"run_at":"document_idle","all_frames":false},{"matches":["https://amauoed.com/*","https://*.amauoed.com/*","https://quizlet.com/*","https://*.quizlet.com/*","https://studocu.com/*","https://*.studocu.com/*","https://brainly.ph/*","https://*.brainly.ph/*","https://brainly.com/*","https://*.brainly.com/*","https://coursehero.com/*","https://*.coursehero.com/*","https://scribd.com/*","https://*.scribd.com/*","https://chegg.com/*","https://*.chegg.com/*","https://bartleby.com/*","https://*.bartleby.com/*","https://numerade.com/*","https://*.numerade.com/*"],"js":["config.js","storage.js","universal-harvester.js","mascot.js"],"run_at":"document_idle","all_frames":false}],"web_accessible_resources":[{"resources":["hud.css","default_bank.json"],"matches":["<all_urls>"]}],"background":{"service_worker":"background.js"},"side_panel":{"default_path":"sidepanel.html"},"options_page":"options.html","action":{"default_popup":"popup.html","default_title":"Moodle Quiz Bot"}};
 const QB_TM_HUD_CSS = "/* ─────────────────────────────────────────────────────────────────────────────\n   hud.css — Quiz Bot HUD panel (Shadow-DOM-scoped styles)\n   Never intercepts page clicks except its own buttons.\n\n   Layout: the HUD host sits 165px from the right edge so the standalone\n   roaming mascot (extension/mascot.js, a 130 px pixel-art canvas, parked\n   bottom-right and wandering Shimeji-style) can never cover the Run / Stop /\n   Clear / Harvest buttons. All mascot styling lives in mascot.js — this file\n   only styles the closed-shadow HUD plus the light-DOM harvester HUD below.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n/* The mascot is a 96×96 pixel-art canvas scaled up: keep every sprite pixel a\n   crisp square even if a host page tries to smooth images globally. The rule is\n   a no-op for every other element (mascot.js styles him too). */\n#qb-mascot-wrap canvas {\n  image-rendering: crisp-edges;\n  image-rendering: pixelated;\n}\n\n:host {\n  all: initial;\n  display: block;\n  position: fixed;\n  z-index: 2147483647;\n  bottom: 20px;\n  right: 165px;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  max-height: calc(100vh - 40px);\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e0e0e0;\n  pointer-events: none;\n}\n\n:host(.active) {\n  pointer-events: auto;\n}\n\n/* --- Speech-bubble HUD panel --- */\n#hud-root,\n#qb-hud,\n.qb-panel {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 380px;\n  max-width: calc(100vw - 205px);\n  box-sizing: border-box;\n  background: linear-gradient(135deg, #1e2a47 0%, #0f3460 100%);\n  border: 1px solid #16213e;\n  border-radius: 12px;\n  box-shadow: 0 12px 48px rgba(0,0,0,0.5);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  max-height: calc(100vh - 40px);\n  pointer-events: auto;\n}\n\n/* Narrow viewports: stack the panel above the mascot instead of beside it. */\n@media (max-width: 564px) {\n  :host {\n    right: 20px;\n    bottom: 20px;\n    width: calc(100vw - 40px);\n    max-width: calc(100vw - 40px);\n  }\n  #hud-root,\n  #qb-hud,\n  .qb-panel {\n    right: 0;\n    bottom: 148px;\n    width: 100%;\n    max-width: calc(100vw - 40px);\n    max-height: calc(100vh - 260px);\n  }\n}\n\n:host(.active) #hud-root { pointer-events: auto; }\n\n#hud-header {\n  background: linear-gradient(135deg, #082040 0%, #1a3a5c 100%);\n  padding: 10px 12px;\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  cursor: move;\n  user-select: none;\n  flex-shrink: 0;\n  border-bottom: 1px solid #16213e;\n}\n\n#hud-title {\n  flex: 1;\n  font-weight: 600;\n  font-size: 13px;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n#hud-status {\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: #16213e;\n  white-space: nowrap;\n}\n\n#hud-status.running { color: #4ade80; }\n#hud-status.stopped { color: #f87171; }\n#hud-status.waiting { color: #fbbf24; }\n#hud-status.reviewing { color: #f5b74f; }\n\n#hud-minimize-btn {\n  width: 28px;\n  height: 28px;\n  background: #16213e;\n  border: 1px solid #4a5568;\n  border-radius: 6px;\n  color: #a0aec0;\n  font-size: 16px;\n  font-weight: bold;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: auto;\n  flex-shrink: 0;\n}\n\n#hud-minimize-btn:hover { background: #2d3748; color: #e2e8f0; }\n\n#hud-minimize-btn.collapsed { background: #3182ce; color: white; }\n\n/* Speech bubble pointing to mascot */\n#hud-bubble {\n  position: relative;\n  margin: 8px 12px;\n  padding: 10px 12px;\n  background: rgba(255,255,255,0.08);\n  backdrop-filter: blur(12px);\n  border-radius: 18px;\n  border: 1px solid rgba(255,255,255,0.15);\n  box-shadow: 0 4px 20px rgba(0,0,0,0.3);\n  pointer-events: auto;\n  max-width: 85%;\n  word-break: break-word;\n}\n\n#hud-bubble::after {\n  content: \"\";\n  position: absolute;\n  bottom: -10px;\n  right: 20px;\n  border-width: 10px 10px 0;\n  border-style: solid;\n  border-color: rgba(255,255,255,0.08) transparent;\n  display: block;\n  width: 0;\n  z-index: 1;\n  pointer-events: none;\n}\n\n/* Latest status line */\n#hud-status-line {\n  font-size: 11px;\n  opacity: 0.7;\n  margin-top: 6px;\n  color: #7f8c8d;\n}\n\n/* Log box */\n#hud-body {\n  padding: 8px 12px;\n  overflow-y: auto;\n  flex: 1;\n  max-height: 220px;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 #16213e;\n}\n\n#hud-body::-webkit-scrollbar { width: 4px; }\n#hud-body::-webkit-scrollbar-track { background: #16213e; }\n#hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n.hud-entry {\n  padding: 4px 0;\n  border-bottom: 1px solid rgba(255,255,255,0.08);\n  font-size: 12px;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.hud-entry:last-child { border-bottom: none; }\n\n.hud-entry .q-text {\n  color: #cbd5e0;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-tier {\n  font-size: 10px;\n  background: #0f3460;\n  padding: 1px 6px;\n  border-radius: 6px;\n  color: #60a5fa;\n  white-space: nowrap;\n}\n\n.hud-entry .q-answer {\n  color: #4ade80;\n  flex: 1;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.hud-entry .q-score {\n  font-size: 10px;\n  color: #7f8c8d;\n}\n\n/* Button row */\n#hud-footer {\n  padding: 8px 12px;\n  display: flex;\n  gap: 6px;\n  flex-shrink: 0;\n  border-top: 1px solid rgba(255,255,255,0.08);\n  background: rgba(0,0,0,0.1);\n}\n\n.hud-btn {\n  pointer-events: auto;\n  border: none;\n  border-radius: 6px;\n  padding: 5px 12px;\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: background 0.15s;\n  flex: 1;\n}\n\n#hud-stop-btn {\n  background: #e53e3e;\n  color: white;\n}\n#hud-stop-btn:hover { background: #c53030; }\n\n#hud-clear-btn {\n  background: #374151;\n  color: #d1d5db;\n}\n#hud-clear-btn:hover { background: #4b5563; }\n\n#hud-harvest-btn {\n  background: #0f766e;\n  color: white;\n}\n#hud-harvest-btn:hover { background: #0d5f59; }\n\n#hud-toggle-btn {\n  background: #3182ce;\n  color: white;\n}\n#hud-toggle-btn:hover { background: #2c5282; }\n#hud-toggle-btn.active { background: #38bdf8; }\n\n/* Log line styles */\n.hud-log-line {\n  font-size: 11px;\n  color: #64748b;\n  padding: 1px 0;\n  border-bottom: 1px solid rgba(22,33,62,0.3);\n}\n\n.hud-log-line.info { color: #94a3b8; }\n.hud-log-line.success { color: #4ade80; }\n.hud-log-line.warn { color: #fbbf24; }\n.hud-log-line.error { color: #f87171; }\n\n/* --- Minimized mode: hide the panel (the standalone mascot stays visible) --- */\n:host(.minimized) #hud-root { display: none; }\n\n/* ─────────────────────────────────────────────────────────────────────────────\n   Universal Harvester HUD (universal-harvester.js)\n\n   This block is the *page-level* twin of the Shadow-DOM HUD above: manifest.json\n   injects hud.css into every site, so #qb-hud lives in the normal light DOM and\n   is styled directly. The `:host` rules above only ever match inside the closed\n   shadow root on amaes.com and are harmless here.\n\n   Status chips reuse the Moodle class names (running / stopped / waiting /\n   reviewing) and log rows reuse .hud-log-line.<level>, so the standalone mascot\n   recognises harvest progress and narrates it with its harvesting / review\n   pixel animations.\n   ───────────────────────────────────────────────────────────────────────────── */\n\n#qb-hud {\n  position: fixed;\n  right: 165px;\n  bottom: 20px;\n  z-index: 2147483646;\n  width: 372px;\n  max-width: calc(100vw - 40px);\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: column;\n  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;\n  font-size: 13px;\n  line-height: 1.4;\n  color: #e2e8f0;\n  background: linear-gradient(135deg, rgba(30, 42, 71, 0.94) 0%, rgba(15, 52, 96, 0.94) 100%);\n  -webkit-backdrop-filter: blur(16px) saturate(140%);\n  backdrop-filter: blur(16px) saturate(140%);\n  border: 1px solid rgba(255, 255, 255, 0.14);\n  border-radius: 14px;\n  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);\n  overflow: hidden;\n  pointer-events: auto;\n  transition: width 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;\n}\n\n/* Compact pill on general sites (auto-expanded on study domains). */\n#qb-hud.qb-collapsed {\n  width: auto;\n  min-width: 0;\n  border-radius: 999px;\n}\n#qb-hud.qb-collapsed #qb-hud-body,\n#qb-hud.qb-collapsed #qb-actions {\n  display: none;\n}\n#qb-hud.qb-collapsed #qb-hud-header {\n  border-bottom: none;\n  padding: 8px 10px 8px 14px;\n}\n#qb-hud.qb-collapsed #qb-hud-title {\n  font-size: 12px;\n}\n#qb-hud.qb-collapsed #qb-status {\n  display: none;\n}\n\n#qb-hud-header {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 10px 12px;\n  background: linear-gradient(135deg, rgba(8, 32, 64, 0.92) 0%, rgba(26, 58, 92, 0.72) 100%);\n  border-bottom: 1px solid rgba(255, 255, 255, 0.09);\n  cursor: move;\n  user-select: none;\n  -webkit-user-select: none;\n}\n\n#qb-hud-title {\n  flex: 1;\n  min-width: 0;\n  font-weight: 600;\n  color: #ffb347;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  letter-spacing: 0.2px;\n}\n\n#qb-status {\n  flex-shrink: 0;\n  font-size: 11px;\n  padding: 2px 8px;\n  border-radius: 10px;\n  background: rgba(22, 33, 62, 0.9);\n  color: #94a3b8;\n  white-space: nowrap;\n}\n\n#qb-status.running { color: #4ade80; }\n#qb-status.stopped { color: #f87171; }\n#qb-status.waiting { color: #fbbf24; }\n#qb-status.reviewing { color: #f5b74f; }\n\n#qb-minimize-btn {\n  flex-shrink: 0;\n  width: 28px;\n  height: 26px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  background: rgba(22, 33, 62, 0.9);\n  border: 1px solid rgba(255, 255, 255, 0.18);\n  border-radius: 8px;\n  color: #cbd5e0;\n  font-size: 14px;\n  font-weight: 700;\n  line-height: 1;\n  cursor: pointer;\n  padding: 0;\n}\n#qb-minimize-btn:hover { background: #2d3748; color: #ffffff; }\n#qb-minimize-btn:active { transform: scale(0.96); }\n\n#qb-hud-body {\n  padding: 8px 12px;\n  max-height: 190px;\n  overflow-y: auto;\n  scrollbar-width: thin;\n  scrollbar-color: #0f3460 rgba(22, 33, 62, 0.4);\n}\n#qb-hud-body::-webkit-scrollbar { width: 4px; }\n#qb-hud-body::-webkit-scrollbar-track { background: rgba(22, 33, 62, 0.4); }\n#qb-hud-body::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }\n\n#qb-log {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-height: 34px;\n}\n\n/* Log rows: same classes as the Moodle HUD (see .hud-log-line below). */\n#qb-log .hud-log-line {\n  font-size: 11px;\n  line-height: 1.45;\n  padding: 2px 0;\n  overflow-wrap: anywhere;\n  word-break: break-word;\n}\n\n#qb-hud-hint {\n  padding: 0 12px 8px;\n  font-size: 10.5px;\n  color: #7f8c8d;\n  user-select: none;\n}\n\n#qb-actions {\n  display: flex;\n  gap: 6px;\n  padding: 8px 12px;\n  border-top: 1px solid rgba(255, 255, 255, 0.09);\n  background: rgba(0, 0, 0, 0.16);\n}\n\n#qb-hud .qb-btn {\n  flex: 1;\n  min-width: 0;\n  border: none;\n  border-radius: 8px;\n  padding: 6px 8px;\n  font-family: inherit;\n  font-size: 11.5px;\n  font-weight: 600;\n  line-height: 1.3;\n  color: #ffffff;\n  cursor: pointer;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  transition: filter 0.15s ease, transform 0.1s ease;\n}\n#qb-hud .qb-btn:hover:not(:disabled) { filter: brightness(1.15); }\n#qb-hud .qb-btn:active:not(:disabled) { transform: translateY(1px); }\n#qb-hud .qb-btn:disabled { opacity: 0.45; cursor: not-allowed; }\n\n#qb-harvest-page { background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%); }\n#qb-harvest-course { background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); }\n#qb-stop { background: linear-gradient(135deg, #b91c1c 0%, #dc2626 100%); flex: 0 0 76px; }\n\n/* Wide/short viewports: keep the pill clear of the gaming/browser edges. */\n@media (max-width: 564px) {\n  #qb-hud {\n    right: 16px;\n    bottom: 168px;\n    width: calc(100vw - 32px);\n    max-width: calc(100vw - 32px);\n  }\n  #qb-hud.qb-collapsed {\n    width: auto;\n    max-width: calc(100vw - 32px);\n  }\n}\n";
 const QB_TM_LOCAL_PREFIX = 'qb_tm_local:';
 const QB_TM_SYNC_PREFIX = 'qb_tm_sync:';
@@ -37,6 +40,8 @@ let qbTmLastError = null;
 const qbTmStorageListeners = new Set();
 const qbTmWatched = new Set();
 const qbTmRuntimeListeners = new Set();
+const qbTmGeminiKeyState = new Map();
+let qbTmGeminiKeyCursor = 0;
 
 function qbTmGMGet(key, fallback) {
   return Promise.resolve(GM_getValue(key, fallback));
@@ -201,7 +206,7 @@ function qbTmRequest(options) {
       responseType: options.responseType,
       onload: (response) => resolve({
         status: response.status,
-        responseText: response.responseText || '',
+        responseText: response.responseType === 'arraybuffer' ? '' : (response.responseText || ''),
         response: response.response,
         responseHeaders: response.responseHeaders || '',
         finalUrl: response.finalUrl || options.url,
@@ -234,16 +239,37 @@ function qbTmBase64FromUtf8(value) {
   return btoa(binary);
 }
 
-async function qbTmGitHubSettings(payload) {
-  const settings = await chrome.storage.sync.get([
-    'GITHUB_BANK_OWNER', 'GITHUB_BANK_REPO', 'GITHUB_BANK_PATH',
-    'GITHUB_SYNC_TOKEN', 'GITHUB_BANK_TOKEN',
+function qbTmBase64FromArrayBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+async function qbTmReadAllSettings() {
+  const [sync, local] = await Promise.all([
+    chrome.storage.sync.get(null),
+    chrome.storage.local.get([
+      'CUSTOM_API_KEY', 'GEMINI_API_KEY', 'OPENROUTER_API_KEY',
+      'OLLAMA_API_KEY', 'GITHUB_SYNC_TOKEN', 'GITHUB_BANK_TOKEN', 'DEEPSEEK_API_KEY',
+    ]),
   ]);
+  const merged = { ...sync };
+  for (const [k, v] of Object.entries(local || {})) {
+    if (v !== undefined && v !== '') merged[k] = v;
+  }
+  return merged;
+}
+
+async function qbTmGitHubSettings(payload) {
+  const settings = await qbTmReadAllSettings();
   return {
-    owner: String(payload.owner || settings.GITHUB_BANK_OWNER || '').trim(),
-    repo: String(payload.repo || settings.GITHUB_BANK_REPO || '').trim(),
-    path: String(payload.path || settings.GITHUB_BANK_PATH || 'bank.json').trim() || 'bank.json',
-    token: String(payload.token || settings.GITHUB_SYNC_TOKEN || settings.GITHUB_BANK_TOKEN || '').trim(),
+    owner: String((payload && payload.owner) || settings.GITHUB_BANK_OWNER || '').trim(),
+    repo: String((payload && payload.repo) || settings.GITHUB_BANK_REPO || '').trim(),
+    path: String((payload && payload.path) || settings.GITHUB_BANK_PATH || 'bank.json').trim() || 'bank.json',
+    token: String((payload && payload.token) || settings.GITHUB_SYNC_TOKEN || settings.GITHUB_BANK_TOKEN || '').trim(),
   };
 }
 
@@ -254,7 +280,7 @@ function qbTmGitHubHeaders(token) {
 }
 
 async function qbTmGitHubGetFile(settings) {
-  const encodedPath = settings.path.split('/').map(encodeURIComponent).join('/');
+  const encodedPath = settings.path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const url = 'https://api.github.com/repos/' + encodeURIComponent(settings.owner) + '/'
     + encodeURIComponent(settings.repo) + '/contents/' + encodedPath;
   const response = await qbTmRequest({ url, headers: qbTmGitHubHeaders(settings.token), timeout: 45000 });
@@ -358,7 +384,7 @@ async function qbTmMergeBank(remote) {
 }
 
 async function qbTmGitHubPut(settings, bank, sha) {
-  const encodedPath = settings.path.split('/').map(encodeURIComponent).join('/');
+  const encodedPath = settings.path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const url = 'https://api.github.com/repos/' + encodeURIComponent(settings.owner) + '/'
     + encodeURIComponent(settings.repo) + '/contents/' + encodedPath;
   const body = {
@@ -419,13 +445,43 @@ async function qbTmSyncBank(payload) {
   return { status: 'ok', added: 0, pushed: count, questions: count };
 }
 
+function qbTmStripHtml(text) {
+  return String(text || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function qbTmParseAnswerKeyHtml(html, maxHits) {
+  const hits = [];
+  const seen = new Set();
+  const blocks = String(html || '').split('class="card mb-2 bg-secondary"');
+  for (let i = 1; i < blocks.length && hits.length < maxHits; i += 1) {
+    const block = blocks[i];
+    const questionMatch = block.match(/class="mb-2">([\s\S]*?)<\/div>/);
+    const answerMatch = block.match(/<strong>\s*([\s\S]*?)\s*<span class="chip bg-success">Correct/);
+    const courseMatch = block.match(/chip bg-primary[^>]*>([\s\S]*?)<\/div>/);
+    if (!(questionMatch && answerMatch)) continue;
+    const answer = qbTmStripHtml(answerMatch[1]).replace(/\s*Correct\s*$/i, '').trim();
+    if (!answer || seen.has(answer.toLowerCase())) continue;
+    seen.add(answer.toLowerCase());
+    hits.push({
+      question: qbTmStripHtml(questionMatch[1]),
+      answer,
+      course: courseMatch ? qbTmStripHtml(courseMatch[1]) : '',
+    });
+  }
+  return hits;
+}
+
 async function qbTmProviderRequest(action, payload) {
-  const settings = await chrome.storage.sync.get([
-    'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_API_URL',
-    'GEMINI_API_KEY', 'GEMINI_MODEL',
-    'CUSTOM_API_KEY', 'CUSTOM_API_BASE_URL', 'CUSTOM_MODEL', 'DEEPSEEK_API_KEY',
-    'OLLAMA_URL', 'OLLAMA_MODEL', 'OLLAMA_API_KEY',
-  ]);
+  const settings = await qbTmReadAllSettings();
   const data = payload || {};
   if (action === 'postOpenRouter') {
     const url = settings.OPENROUTER_API_URL || 'https://openrouter.ai/api/v1/chat/completions';
@@ -449,7 +505,7 @@ async function qbTmProviderRequest(action, payload) {
     const deepseekDirect = !settings.CUSTOM_API_KEY && !!settings.DEEPSEEK_API_KEY;
     const base = String(deepseekDirect
       ? 'https://api.deepseek.com/v1'
-      : settings.CUSTOM_API_BASE_URL || '').replace(/\/$/, '');
+      : settings.CUSTOM_API_BASE_URL || 'https://api.freellmapi.com/v1').replace(/\/$/, '');
     if (!base) return { _reqId: data._reqId, error: 'Custom API base URL is not configured' };
     const headers = { 'Content-Type': 'application/json' };
     const apiKey = settings.CUSTOM_API_KEY || settings.DEEPSEEK_API_KEY;
@@ -469,21 +525,50 @@ async function qbTmProviderRequest(action, payload) {
     const keys = String(settings.GEMINI_API_KEY || '').split(/[\s,;]+/).filter(Boolean);
     if (!keys.length) return { _reqId: data._reqId, error: 'Gemini API key is missing' };
     const model = encodeURIComponent(data.model || settings.GEMINI_MODEL || 'gemini-3.8-flash');
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model
-      + ':generateContent?key=' + encodeURIComponent(keys[0]);
-    const response = await qbTmRequest({
-      method: 'POST', url, headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({ contents: data.contents || [], generationConfig: data.generationConfig }),
-      timeout: data.timeout || 30000,
-    });
-    const json = qbTmParseJson(response.responseText, 'Gemini');
-    if (response.status < 200 || response.status >= 300) {
-      return { _reqId: data._reqId, status: response.status, error: 'Gemini HTTP ' + response.status + ': ' + response.responseText.slice(0, 300) };
+    const now = Date.now();
+    const cooldownMs = (Number(settings.GEMINI_KEY_COOLDOWN) || 180) * 1000;
+    let tried = 0;
+    let lastStatus = 0;
+    let lastError = '';
+    for (let offset = 0; offset < keys.length; offset += 1) {
+      const idx = (qbTmGeminiKeyCursor + offset) % keys.length;
+      const key = keys[idx];
+      const state = qbTmGeminiKeyState.get(key) || {};
+      if ((state.limitedUntil && state.limitedUntil > now) || (state.invalidUntil && state.invalidUntil > now)) continue;
+      tried += 1;
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model
+        + ':generateContent?key=' + encodeURIComponent(key);
+      const response = await qbTmRequest({
+        method: 'POST', url, headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ contents: data.contents || [], generationConfig: data.generationConfig }),
+        timeout: data.timeout || 30000,
+      });
+      if (response.status >= 200 && response.status < 300) {
+        const json = qbTmParseJson(response.responseText, 'Gemini');
+        qbTmGeminiKeyCursor = (idx + 1) % keys.length;
+        return {
+          _reqId: data._reqId,
+          text: (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts || [])
+            .map((part) => part.text || '').join('').trim(),
+          keyIndex: idx + 1,
+          keyCount: keys.length,
+        };
+      }
+      lastStatus = response.status;
+      lastError = 'Gemini HTTP ' + response.status + ': ' + response.responseText.slice(0, 300);
+      const quota = response.status === 429 || response.status === 503 || (response.status === 403 && /quota|rate/i.test(response.responseText));
+      const invalid = response.status === 401 || (response.status === 400 && /api[ _-]?key not valid|invalid api key/i.test(response.responseText));
+      if (quota) { qbTmGeminiKeyState.set(key, { ...state, limitedUntil: now + cooldownMs }); continue; }
+      if (invalid) { qbTmGeminiKeyState.set(key, { ...state, invalidUntil: now + 24 * 60 * 60 * 1000 }); continue; }
+      return { _reqId: data._reqId, status: response.status, error: lastError };
     }
     return {
       _reqId: data._reqId,
-      text: (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts || [])
-        .map((part) => part.text || '').join('').trim(),
+      status: lastStatus || 429,
+      error: lastError || ('All ' + keys.length + ' Gemini API key(s) are cooling down or invalid'),
+      allKeysLimited: true,
+      keysTried: tried,
+      keyCount: keys.length,
     };
   }
   if (action === 'postOllama') {
@@ -502,38 +587,6 @@ async function qbTmProviderRequest(action, payload) {
   return null;
 }
 
-async function qbTmAskAI(payload) {
-  const input = payload || {};
-  const prompt = String(input.prompt || input.question || input.text || '');
-  const messages = Array.isArray(input.messages) ? input.messages : [{ role: 'user', content: prompt }];
-  const settings = await chrome.storage.sync.get(['GEMINI_API_KEY', 'OPENROUTER_API_KEY', 'CUSTOM_API_KEY', 'DEEPSEEK_API_KEY']);
-  if (settings.OPENROUTER_API_KEY) {
-    const result = await qbTmProviderRequest('postOpenRouter', {
-      body: { model: input.model || 'deepseek/deepseek-chat', messages, temperature: input.temperature || 0.1, max_tokens: input.maxTokens || 512 },
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error && result.choices) return { text: result.choices[0] && result.choices[0].message && result.choices[0].message.content || '', response: result };
-  }
-  if (settings.GEMINI_API_KEY) {
-    const result = await qbTmProviderRequest('postGemini', {
-      contents: messages.map((message) => ({
-        role: message.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) }],
-      })),
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error) return { text: result.text || '', response: result };
-  }
-  if (settings.CUSTOM_API_KEY || settings.DEEPSEEK_API_KEY) {
-    const result = await qbTmProviderRequest('postCustomApi', {
-      body: { model: input.model || 'auto', messages, temperature: input.temperature || 0.1, max_tokens: input.maxTokens || 512 },
-      timeout: input.timeout || 30000,
-    });
-    if (!result.error) return { text: result.choices && result.choices[0] && result.choices[0].message && result.choices[0].message.content || '', response: result };
-  }
-  throw new Error('Configure an OpenRouter/DeepSeek, Gemini, or custom API key in Quiz Bot Settings');
-}
-
 function qbTmSearchWeb(query, maxResults) {
   const term = String(query || '').replace(/\s+/g, ' ').trim();
   if (!term) return Promise.resolve({ text: '' });
@@ -549,9 +602,7 @@ function qbTmSearchWeb(query, maxResults) {
     const pattern = /<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
     let match;
     while ((match = pattern.exec(html)) && snippets.length < limit) {
-      const snippet = match[1].replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ')
-        .replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
-        .replace(/\s+/g, ' ').trim().slice(0, 400);
+      const snippet = qbTmStripHtml(match[1]).slice(0, 400);
       if (snippet && !seen.has(snippet)) {
         seen.add(snippet);
         snippets.push((snippets.length + 1) + '. ' + snippet);
@@ -565,6 +616,8 @@ async function qbTmHandleMessage(message) {
   const action = message && (message.action || message.type);
   const payload = message && (message.payload || message);
   const reqId = message && message._reqId;
+
+  if (action === 'log') return { _reqId: reqId, ok: true };
   if (action === 'GET_CURRENT_TAB_ID') {
     const key = '__qb_tm_tab_id';
     let id = 0;
@@ -586,33 +639,66 @@ async function qbTmHandleMessage(message) {
       return { _reqId: reqId, ...await qbTmPullBank(settings) };
     } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
   }
-  if (action === 'FETCH_URL') {
+  if (action === 'getAnswerKey') {
     try {
-      const url = payload.url || message.url;
-      if (!url) throw new Error('FETCH_URL requires a URL');
+      const q = String(payload.question || '').slice(0, 300);
       const response = await qbTmRequest({
-        method: payload.method || 'GET',
-        url,
-        headers: payload.headers || {},
-        data: payload.body,
-        timeout: payload.timeout || 30000,
+        url: 'https://amauoed.com/search?query=' + encodeURIComponent(q),
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AmaBot/1.0)' },
+        timeout: 6000,
       });
-      return { _reqId: reqId, ...response, text: response.responseText };
-    } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+      const hits = response.status >= 200 && response.status < 300
+        ? qbTmParseAnswerKeyHtml(response.responseText, 4)
+        : [];
+      return { _reqId: reqId, hits };
+    } catch (error) { return { _reqId: reqId, hits: [] }; }
   }
-  if (action === 'SEARCH_WEB_SNIPPETS') {
+  if (action === 'searchWeb' || action === 'SEARCH_WEB_SNIPPETS') {
     const result = await qbTmSearchWeb(payload.query, payload.maxResults);
     return { _reqId: reqId, ...result };
   }
-  if (action === 'ASK_AI') {
-    try { return { _reqId: reqId, ...await qbTmAskAI(payload) }; }
-    catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+  if (action === 'resolveCustomModel') {
+    try {
+      const settings = await qbTmReadAllSettings();
+      const base = String(settings.CUSTOM_API_BASE_URL || 'https://api.freellmapi.com/v1').replace(/\/+$/, '');
+      const headers = { 'Content-Type': 'application/json' };
+      if (settings.CUSTOM_API_KEY) headers.Authorization = 'Bearer ' + settings.CUSTOM_API_KEY;
+      const response = await qbTmRequest({ url: base + '/models', headers, timeout: 10000 });
+      if (response.status < 200 || response.status >= 300) return { _reqId: reqId, model: null };
+      const parsed = qbTmParseJson(response.responseText, 'Custom /models');
+      const list = parsed.data || parsed.models || [];
+      const first = list.find((m) => m && typeof (m.id || m.name || m.model) === 'string');
+      return { _reqId: reqId, model: first ? (first.id || first.name || first.model) : null };
+    } catch (error) { return { _reqId: reqId, model: null }; }
+  }
+  if (action === 'fetchImageBase64') {
+    try {
+      const response = await qbTmRequest({
+        url: payload.url,
+        responseType: 'arraybuffer',
+        timeout: payload.timeout || 10000,
+      });
+      if (response.status < 200 || response.status >= 300 || !response.response) {
+        return { _reqId: reqId, error: 'Image HTTP ' + response.status };
+      }
+      const mimeMatch = String(response.responseHeaders || '').match(/content-type:\s*([^\r\n;]+)/i);
+      const mimeType = mimeMatch && mimeMatch[1].trim().startsWith('image/') ? mimeMatch[1].trim() : 'image/png';
+      return { _reqId: reqId, base64: qbTmBase64FromArrayBuffer(response.response), mimeType };
+    } catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
+  }
+  if (action === 'checkOllama') {
+    try {
+      const settings = await qbTmReadAllSettings();
+      const base = String(settings.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+      const response = await qbTmRequest({ url: base + '/api/tags', timeout: 2500 });
+      return { _reqId: reqId, ok: response.status >= 200 && response.status < 300 };
+    } catch (error) { return { _reqId: reqId, ok: false }; }
   }
   if (action === 'postOpenRouter' || action === 'postGemini' || action === 'postCustomApi' || action === 'postOllama') {
     try { return await qbTmProviderRequest(action, { ...payload, _reqId: reqId }); }
     catch (error) { return { _reqId: reqId, error: error.message || String(error) }; }
   }
-  if (action === 'log' || action === 'CHECK_EXTENSION_UPDATE' || action === 'AUTO_HARVEST') {
+  if (action === 'CHECK_EXTENSION_UPDATE' || action === 'AUTO_HARVEST') {
     return { _reqId: reqId, status: 'unavailable' };
   }
   return { _reqId: reqId, error: 'Unsupported userscript action: ' + String(action || '') };
@@ -666,17 +752,18 @@ try {
     configurable: true,
     get() { return qbTmLastError; },
   });
-} catch (error) { /* a partial browser chrome object may expose a non-configurable property */ }
+} catch (error) { /* non-configurable in some browsers */ }
 
 const QB_TM_SETTINGS = [
+  ['MOODLE_URL', 'Moodle base URL'],
   ['GITHUB_BANK_OWNER', 'GitHub owner'],
   ['GITHUB_BANK_REPO', 'Question bank repository'],
   ['GITHUB_BANK_PATH', 'Question bank file path'],
   ['GITHUB_SYNC_TOKEN', 'GitHub token (repo contents access)'],
   ['OPENROUTER_API_KEY', 'OpenRouter API key'],
-  ['DEEPSEEK_API_KEY', 'DeepSeek API key'],
-  ['OPENROUTER_MODEL', 'OpenRouter / DeepSeek model'],
+  ['OPENROUTER_MODEL', 'OpenRouter model'],
   ['GEMINI_API_KEY', 'Gemini API key(s)'],
+  ['GEMINI_MODEL', 'Gemini model'],
   ['CUSTOM_API_BASE_URL', 'Custom API base URL'],
   ['CUSTOM_API_KEY', 'Custom API key'],
   ['CUSTOM_MODEL', 'Custom API model'],
@@ -724,7 +811,7 @@ function qbTmOpenSettings() {
   });
   document.body.appendChild(overlay);
 
-  GM_addStyle('#qb-tm-settings-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:20px;font:14px system-ui,sans-serif;color:#e2e8f0}#qb-tm-settings-dialog{position:relative;width:min(620px,100%);max-height:90vh;overflow:auto;background:#111b31;border:1px solid #475569;border-radius:14px;padding:24px;box-shadow:0 20px 70px #000b}#qb-tm-settings-title{margin:0 40px 18px 0;color:#ffb347;font-size:20px}.qb-tm-close{position:absolute;right:14px;top:12px;background:#253550;color:#fff;border:0;border-radius:6px;font-size:22px;width:34px;height:34px;cursor:pointer}#qb-tm-settings-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qb-tm-field{display:flex;flex-direction:column;gap:5px;color:#cbd5e1}.qb-tm-field input{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #475569;border-radius:7px;background:#0b1220;color:#f8fafc;font:inherit}.qb-tm-field:nth-child(4),.qb-tm-field:nth-child(5),.qb-tm-field:nth-child(7),.qb-tm-field:nth-child(8),.qb-tm-field:nth-child(9),.qb-tm-field:nth-child(10){grid-column:1/-1}.qb-tm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}.qb-tm-actions button{border:0;border-radius:7px;padding:10px 16px;color:#fff;font-weight:600;cursor:pointer}.qb-tm-primary{background:#2563eb}.qb-tm-secondary{background:#0f766e}#qb-tm-settings-status{min-height:1.4em;margin:12px 0 0;color:#86efac}#qb-tm-settings-status.error{color:#fca5a5}@media(max-width:560px){#qb-tm-settings-fields{grid-template-columns:1fr}.qb-tm-field{grid-column:1/-1}}');
+  GM_addStyle('#qb-tm-settings-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(2,6,23,.78);display:flex;align-items:center;justify-content:center;padding:20px;font:14px system-ui,sans-serif;color:#e2e8f0}#qb-tm-settings-dialog{position:relative;width:min(620px,100%);max-height:90vh;overflow:auto;background:#111b31;border:1px solid #475569;border-radius:14px;padding:24px;box-shadow:0 20px 70px #000b}#qb-tm-settings-title{margin:0 40px 18px 0;color:#ffb347;font-size:20px}.qb-tm-close{position:absolute;right:14px;top:12px;background:#253550;color:#fff;border:0;border-radius:6px;font-size:22px;width:34px;height:34px;cursor:pointer}#qb-tm-settings-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.qb-tm-field{display:flex;flex-direction:column;gap:5px;color:#cbd5e1}.qb-tm-field input{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid #475569;border-radius:7px;background:#0b1220;color:#f8fafc;font:inherit}.qb-tm-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}.qb-tm-actions button{border:0;border-radius:7px;padding:10px 16px;color:#fff;font-weight:600;cursor:pointer}.qb-tm-primary{background:#2563eb}.qb-tm-secondary{background:#0f766e}#qb-tm-settings-status{min-height:1.4em;margin:12px 0 0;color:#86efac}#qb-tm-settings-status.error{color:#fca5a5}@media(max-width:560px){#qb-tm-settings-fields{grid-template-columns:1fr}}');
   for (const [key, label] of QB_TM_SETTINGS) {
     const wrapper = document.createElement('label');
     wrapper.className = 'qb-tm-field';
@@ -740,15 +827,14 @@ function qbTmOpenSettings() {
   }
   const fill = async () => {
     try {
+      const current = typeof loadConfig === 'function' ? await loadConfig() : await qbTmReadAllSettings();
       for (const input of form.querySelectorAll('input[data-key]')) {
-        input.value = await qbTmGMGet(QB_TM_SYNC_PREFIX + input.dataset.key, '');
-        if (input.dataset.key === 'GITHUB_BANK_PATH' && !input.value) input.value = 'bank.json';
-        if (input.dataset.key === 'OPENROUTER_MODEL' && !input.value) input.value = 'deepseek/deepseek-v4.1-flash';
-        if (input.dataset.key === 'CUSTOM_API_BASE_URL' && !input.value) input.value = 'https://api.freellmapi.com/v1';
+        const key = input.dataset.key;
+        input.value = current[key] != null ? String(current[key]) : '';
       }
     } catch (error) {
-    status.textContent = 'Could not load settings: ' + error.message;
-    status.classList.add('error');
+      status.textContent = 'Could not load settings: ' + error.message;
+      status.classList.add('error');
     }
   };
   const collect = () => {
@@ -761,7 +847,8 @@ function qbTmOpenSettings() {
     status.classList.remove('error');
     status.textContent = 'Saving settings...';
     try {
-      await chrome.storage.sync.set(collect());
+      if (typeof saveConfig === 'function') await saveConfig(collect());
+      else await chrome.storage.sync.set(collect());
       if (typeof window.__qbTmReloadConfig === 'function') await window.__qbTmReloadConfig();
       status.textContent = 'Settings saved across your Tampermonkey tabs.';
     } catch (error) {
@@ -774,7 +861,7 @@ function qbTmOpenSettings() {
     status.classList.remove('error');
     status.textContent = 'Syncing question bank with GitHub...';
     try {
-      await chrome.storage.sync.set(collect());
+      if (typeof saveConfig === 'function') await saveConfig(collect());
       if (typeof window.__qbTmReloadConfig === 'function') await window.__qbTmReloadConfig();
       const result = await qbTmHandleMessage({ action: 'SYNC_GITHUB_BANK' });
       if (result.error) throw new Error(result.error);
@@ -810,17 +897,16 @@ function qbTmAddGearButton(header) {
   header.appendChild(button);
 }
 
-GM_addStyle(QB_TM_HUD_CSS);
 
-const qbTmIsAmaes = location.hostname.toLowerCase() === 'amaes.com'
-  || location.hostname.toLowerCase().endsWith('.amaes.com');
-if (qbTmIsAmaes) {
-  (function () {
 
 ;
 // ─────────────────────────────────────────────────────────────────────────────
-//  CONFIG — defaults + chrome.storage.sync overlay
-//  Ported verbatim from bot.py + answerkey.py environment variables.
+//  CONFIG — single source of truth for defaults, secret/sync split, and live
+//  cross-context updates.
+//
+//  Non-secret preferences live in chrome.storage.sync; API keys and GitHub
+//  tokens live exclusively in chrome.storage.local (migrated automatically
+//  from older sync installations so existing users lose nothing).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULTS = Object.freeze({
@@ -837,8 +923,7 @@ const DEFAULTS = Object.freeze({
   GITHUB_BANK_REPO: '',
   GITHUB_BANK_PATH: 'bank.json',
   GITHUB_SYNC_TOKEN: '',
-  // Legacy alias. The options page writes `GITHUB_SYNC_TOKEN`; the sync code
-  // accepts either (the primary key wins) so older saved settings keep working.
+  // Legacy alias kept so older saved settings migrate cleanly.
   GITHUB_BANK_TOKEN: '',
 
   // OpenRouter
@@ -859,7 +944,7 @@ const DEFAULTS = Object.freeze({
   OLLAMA_MODEL: 'qwen2.5:7b',
   OLLAMA_VISION_MODEL: '',
   OLLAMA_API_KEY: '',
-  OLLAMA_NUM_CTX: 4096,
+  OLLAMA_NUM_CTX: 16384,
   OLLAMA_KEEP_ALIVE: '10m',
   OLLAMA_TIMEOUT_MS: 60000,
 
@@ -922,66 +1007,205 @@ const DEFAULTS = Object.freeze({
   BOT_ENABLED: true,
 });
 
+const SECRET_CONFIG_KEYS = Object.freeze([
+  'CUSTOM_API_KEY',
+  'GEMINI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'OLLAMA_API_KEY',
+  'GITHUB_SYNC_TOKEN',
+  'GITHUB_BANK_TOKEN',
+]);
+
+const SECRET_CONFIG_SET = new Set(SECRET_CONFIG_KEYS);
 const PLACEHOLDER_RE = /answer\s*\d+\s*[\.\)]?\s*question\s*\d+/gi;
 
 // In-memory merged config.
 let _merged = { ...DEFAULTS };
 
-/**
- * Load settings from chrome.storage.sync and merge with defaults.
- * Called once at startup by background.js and content.js.
- */
-async function loadConfig() {
+function _storageGet(area, keys) {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(null, (items) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[config] storage.sync error:', chrome.runtime.lastError.message);
-        resolve({ ...DEFAULTS });
-        return { ...DEFAULTS };
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area]) {
+        resolve({});
+        return;
       }
-      _merged = { ...DEFAULTS };
-      for (const [k, v] of Object.entries(items)) {
-        if (k in DEFAULTS && v !== undefined && v !== null) {
-          _merged[k] = v;
+      chrome.storage[area].get(keys, (items) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          console.warn(`[config] storage.${area} get error:`, chrome.runtime.lastError.message);
+          resolve({});
+          return;
         }
+        resolve(items || {});
+      });
+    } catch (error) {
+      resolve({});
+    }
+  });
+}
+
+function _storageSet(area, values) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area]) {
+        resolve();
+        return;
       }
-      const geminiModel = String(_merged.GEMINI_MODEL || '').trim();
-      if (!geminiModel || geminiModel === 'gemini-2.5-flash') {
-        _merged.GEMINI_MODEL = 'gemini-3.8-flash';
-        chrome.storage.sync.set({ GEMINI_MODEL: _merged.GEMINI_MODEL });
+      chrome.storage[area].set(values, () => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function _storageRemove(area, keys) {
+  return new Promise((resolve) => {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage[area] ||
+          typeof chrome.storage[area].remove !== 'function') {
+        resolve();
+        return;
       }
-      const ollamaUrl = String(_merged.OLLAMA_URL || '').trim();
-      const ollamaModel = String(_merged.OLLAMA_MODEL || '').trim();
-      const ollamaUpdates = {};
-      if (!ollamaUrl) {
-        _merged.OLLAMA_URL = DEFAULTS.OLLAMA_URL;
-        ollamaUpdates.OLLAMA_URL = _merged.OLLAMA_URL;
-      }
-      if (!ollamaModel || ollamaModel === 'gemma4:e2b') {
-        _merged.OLLAMA_MODEL = DEFAULTS.OLLAMA_MODEL;
-        ollamaUpdates.OLLAMA_MODEL = _merged.OLLAMA_MODEL;
-      }
-      if (Object.keys(ollamaUpdates).length) chrome.storage.sync.set(ollamaUpdates);
-      resolve(_merged);
-    });
+      chrome.storage[area].remove(keys, () => {
+        void (chrome.runtime && chrome.runtime.lastError);
+        resolve();
+      });
+    } catch (error) {
+      resolve();
+    }
   });
 }
 
 /**
- * Save a set of config keys to storage.sync.
+ * Load settings from chrome.storage.sync (preferences) + chrome.storage.local
+ * (secrets & BOT_ENABLED) and merge with DEFAULTS.
+ * Transparently migrates any legacy secrets found in chrome.storage.sync into
+ * chrome.storage.local and removes them from sync.
+ */
+async function loadConfig() {
+  const [syncItems, localItems] = await Promise.all([
+    _storageGet('sync', null),
+    _storageGet('local', [...SECRET_CONFIG_KEYS, 'BOT_ENABLED']),
+  ]);
+
+  _merged = { ...DEFAULTS };
+
+  // Apply non-secret preferences from sync.
+  for (const [k, v] of Object.entries(syncItems)) {
+    if (k in DEFAULTS && !SECRET_CONFIG_SET.has(k) && v !== undefined && v !== null) {
+      _merged[k] = v;
+    }
+  }
+
+  // Apply secrets from local, migrating any legacy values still in sync.
+  const secretsToMigrate = {};
+  const legacySyncToRemove = [];
+  for (const key of SECRET_CONFIG_KEYS) {
+    const localVal = localItems[key];
+    const syncVal = syncItems[key];
+    if (typeof localVal === 'string' && localVal.length > 0) {
+      _merged[key] = localVal;
+      if (syncVal !== undefined) legacySyncToRemove.push(key);
+    } else if (typeof syncVal === 'string' && syncVal.length > 0) {
+      _merged[key] = syncVal;
+      secretsToMigrate[key] = syncVal;
+      legacySyncToRemove.push(key);
+    } else if (localVal !== undefined && localVal !== null) {
+      _merged[key] = localVal;
+    }
+  }
+
+  // Legacy token alias: promote GITHUB_BANK_TOKEN -> GITHUB_SYNC_TOKEN if unset.
+  if (!_merged.GITHUB_SYNC_TOKEN && _merged.GITHUB_BANK_TOKEN) {
+    _merged.GITHUB_SYNC_TOKEN = _merged.GITHUB_BANK_TOKEN;
+    secretsToMigrate.GITHUB_SYNC_TOKEN = _merged.GITHUB_BANK_TOKEN;
+  }
+
+  // Local BOT_ENABLED wins for instant popup toggles.
+  if (localItems.BOT_ENABLED !== undefined) {
+    _merged.BOT_ENABLED = localItems.BOT_ENABLED !== false;
+  }
+
+  // Normalize deprecated/blank model defaults without locking user overrides.
+  const syncMigrations = {};
+  const geminiModel = String(_merged.GEMINI_MODEL || '').trim();
+  if (!geminiModel || geminiModel === 'gemini-2.5-flash') {
+    _merged.GEMINI_MODEL = DEFAULTS.GEMINI_MODEL;
+    syncMigrations.GEMINI_MODEL = _merged.GEMINI_MODEL;
+  }
+  const ollamaUrl = String(_merged.OLLAMA_URL || '').trim();
+  const ollamaModel = String(_merged.OLLAMA_MODEL || '').trim();
+  if (!ollamaUrl) {
+    _merged.OLLAMA_URL = DEFAULTS.OLLAMA_URL;
+    syncMigrations.OLLAMA_URL = _merged.OLLAMA_URL;
+  }
+  if (!ollamaModel || ollamaModel === 'gemma4:e2b') {
+    _merged.OLLAMA_MODEL = DEFAULTS.OLLAMA_MODEL;
+    syncMigrations.OLLAMA_MODEL = _merged.OLLAMA_MODEL;
+  }
+
+  if (Object.keys(secretsToMigrate).length) {
+    await _storageSet('local', secretsToMigrate).catch(() => {});
+  }
+  if (legacySyncToRemove.length) {
+    await _storageRemove('sync', legacySyncToRemove);
+  }
+  if (Object.keys(syncMigrations).length) {
+    await _storageSet('sync', syncMigrations).catch(() => {});
+  }
+
+  return _merged;
+}
+
+/**
+ * Save a set of config keys: secrets go exclusively to chrome.storage.local,
+ * preferences go to chrome.storage.sync. Throws if storage writes fail.
  */
 async function saveConfig(updates) {
-  return new Promise((resolve) => {
-    const filtered = {};
-    for (const [k, v] of Object.entries(updates)) {
-      if (k in DEFAULTS) {
-        filtered[k] = v;
-        _merged[k] = v;
-      }
+  const syncUpdates = {};
+  const localUpdates = {};
+  const syncSecretsToRemove = [];
+
+  for (const [k, v] of Object.entries(updates || {})) {
+    if (!(k in DEFAULTS)) continue;
+    _merged[k] = v;
+    if (SECRET_CONFIG_SET.has(k)) {
+      localUpdates[k] = v;
+      syncSecretsToRemove.push(k);
+    } else {
+      syncUpdates[k] = v;
+      if (k === 'BOT_ENABLED') localUpdates[k] = v;
     }
-    chrome.storage.sync.set(filtered, () => {
-      resolve();
-    });
+  }
+
+  if (Object.keys(localUpdates).length) {
+    await _storageSet('local', localUpdates);
+  }
+  if (Object.keys(syncUpdates).length) {
+    await _storageSet('sync', syncUpdates);
+  }
+  if (syncSecretsToRemove.length) {
+    await _storageRemove('sync', syncSecretsToRemove);
+  }
+}
+
+// Keep every context's in-memory `_merged` config synchronized live when
+// Options, popup, or another tab updates settings or API keys.
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (!changes || (area !== 'sync' && area !== 'local')) return;
+    for (const [key, change] of Object.entries(changes)) {
+      if (!(key in DEFAULTS)) continue;
+      if (area === 'local' && !SECRET_CONFIG_SET.has(key) && key !== 'BOT_ENABLED') continue;
+      if (area === 'sync' && SECRET_CONFIG_SET.has(key)) continue;
+      const next = change ? change.newValue : undefined;
+      _merged[key] = next !== undefined && next !== null ? next : DEFAULTS[key];
+    }
   });
 }
 
@@ -1008,11 +1232,28 @@ function ollamaTimeoutMs(value) {
   return Math.max(ms, 30000);
 }
 
+/**
+ * True when `hostname` matches the configured MOODLE_URL host or amaes.com.
+ */
+function moodleAllowedHost(hostname) {
+  const host = String(hostname || '').toLowerCase().trim();
+  if (!host) return false;
+  if (host === 'amaes.com' || host.endsWith('.amaes.com')) return true;
+  try {
+    const configured = new URL(String(_merged.MOODLE_URL || DEFAULTS.MOODLE_URL)).hostname.toLowerCase();
+    if (!configured) return false;
+    return host === configured || host.endsWith('.' + configured);
+  } catch (error) {
+    return false;
+  }
+}
+
+
 ;
 // ─────────────────────────────────────────────────────────────────────────────
 //  STORAGE — promise-mutex serialized read-modify-write cycle
 //  chrome.storage.local for answer key cache, wrong cache, search cache.
-//  In-memory mirror for hot-path lookups.
+//  In-memory mirror + inverted token index for fast fuzzy lookups.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Promise-mutex serialiser ────────────────────────────────────────────────
@@ -1020,17 +1261,76 @@ let _queue = Promise.resolve();
 
 /**
  * Serialise a read-modify-write cycle end to end.
- * fn receives the current data dict, must return the new data dict (or same).
  */
 async function mutex(fn) {
   _queue = _queue.then(fn, fn);
   return _queue;
 }
 
-// ── In-memory mirrors ───────────────────────────────────────────────────────
+// ── In-memory mirrors + inverted token index ────────────────────────────────
 let _answerKeyMem = {};
 let _wrongMem = {};
 let _searchMem = {};
+
+// Inverted index: normalized token (>=3 chars) -> Set of normalized question keys.
+// Keeps fuzzy lookups fast even with tens of thousands of banked questions.
+const _tokenIndex = new Map();
+const _keyTokens = new Map();
+
+const INDEX_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'that', 'this', 'with', 'from', 'are', 'was', 'were',
+  'what', 'which', 'who', 'whom', 'when', 'where', 'why', 'how', 'not', 'can',
+  'does', 'into', 'your', 'their', 'they', 'them', 'have', 'has', 'had', 'its',
+  'one', 'two', 'all', 'any', 'but', 'you', 'will', 'would', 'should', 'could',
+]);
+
+function _extractIndexTokens(normKey) {
+  if (!normKey) return [];
+  const words = normKey.split(' ');
+  const out = [];
+  const seen = new Set();
+  for (const word of words) {
+    if (word.length < 3 || INDEX_STOP_WORDS.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    out.push(word);
+  }
+  return out;
+}
+
+function _indexAnswerKey(key) {
+  if (!key) return;
+  _unindexAnswerKey(key);
+  const tokens = _extractIndexTokens(key);
+  _keyTokens.set(key, tokens);
+  for (const token of tokens) {
+    let bucket = _tokenIndex.get(token);
+    if (!bucket) {
+      bucket = new Set();
+      _tokenIndex.set(token, bucket);
+    }
+    bucket.add(key);
+  }
+}
+
+function _unindexAnswerKey(key) {
+  const prev = _keyTokens.get(key);
+  if (!prev) return;
+  for (const token of prev) {
+    const bucket = _tokenIndex.get(token);
+    if (!bucket) continue;
+    bucket.delete(key);
+    if (bucket.size === 0) _tokenIndex.delete(token);
+  }
+  _keyTokens.delete(key);
+}
+
+function _rebuildTokenIndex() {
+  _tokenIndex.clear();
+  _keyTokens.clear();
+  for (const key of Object.keys(_answerKeyMem)) {
+    _indexAnswerKey(key);
+  }
+}
 
 const STORAGE_KEYS = {
   ANSWER_KEY: 'answerkey_cache',
@@ -1133,6 +1433,7 @@ function ensureLoaded() {
       _answerKeyMem = validateAnswerKey(result[STORAGE_KEYS.ANSWER_KEY] || {});
       _wrongMem = validateWrong(result[STORAGE_KEYS.WRONG] || {});
       _searchMem = validateSearch(result[STORAGE_KEYS.SEARCH] || {});
+      _rebuildTokenIndex();
       _loaded = true;
     })();
   }
@@ -1163,6 +1464,7 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged)
     if (area !== 'local' || !_loaded) return;
     if (changes[STORAGE_KEYS.ANSWER_KEY]) {
       _answerKeyMem = overlayPending('ak', changes[STORAGE_KEYS.ANSWER_KEY].newValue, _answerKeyMem);
+      _rebuildTokenIndex();
     }
     if (changes[STORAGE_KEYS.WRONG]) {
       _wrongMem = overlayPending('wrong', changes[STORAGE_KEYS.WRONG].newValue, _wrongMem);
@@ -1187,6 +1489,7 @@ async function flushNow() {
   _flushTimer = null;
   await doFlush();
 }
+
 // ── Answer key cache ────────────────────────────────────────────────────────
 async function answerKeyGet(key, options = {}) {
   await ensureLoaded();
@@ -1202,6 +1505,7 @@ async function answerKeyGet(key, options = {}) {
   ));
   if (ttl > 0 && !permanent && Date.now() / 1000 - ts > ttl) {
     delete _answerKeyMem[key];
+    _unindexAnswerKey(key);
     markKey('ak', key, true);
     scheduleFlush();
     return null;
@@ -1216,6 +1520,85 @@ async function answerKeyGet(key, options = {}) {
       answer === knownWrong || similarity(answer, knownWrong) >= 0.9
     );
   });
+}
+
+/**
+ * Fast fuzzy lookup over `_answerKeyMem` backed by the inverted token index.
+ * Pre-filters to keys sharing tokens with `question` before computing bigram
+ * Dice similarity, avoiding O(N) scans over 50k entries.
+ * Returns { key, entry, score } or null.
+ */
+async function answerKeyFindFuzzy(question, minScore = 0.80, acceptEntry = null) {
+  await ensureLoaded();
+  const key = normText(question);
+  if (!key) return null;
+
+  const tokens = _extractIndexTokens(key);
+  let candidates;
+  if (tokens.length > 0 && _tokenIndex.size > 0) {
+    const overlap = new Map();
+    for (const token of tokens) {
+      const bucket = _tokenIndex.get(token);
+      if (!bucket) continue;
+      for (const candidateKey of bucket) {
+        overlap.set(candidateKey, (overlap.get(candidateKey) || 0) + 1);
+      }
+    }
+    if (overlap.size === 0) return null;
+    // Prioritize candidates with highest token overlap; cap work to top 250.
+    candidates = [...overlap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 250)
+      .map(([candidateKey]) => candidateKey);
+  } else {
+    candidates = Object.keys(_answerKeyMem);
+  }
+
+  let best = null;
+  let bestScore = 0;
+  for (const storedKey of candidates) {
+    const value = _answerKeyMem[storedKey];
+    if (!value) continue;
+    const score = similarity(key, storedKey);
+    if (score < minScore || score <= bestScore) continue;
+    if (acceptEntry && !acceptEntry(storedKey, value, score)) continue;
+    best = { key: storedKey, entry: value, score };
+    bestScore = score;
+  }
+  return best;
+}
+
+/**
+ * Search banked questions by substring for the Options Bank Manager UI.
+ */
+async function answerKeySearch(query, limit = 50) {
+  await ensureLoaded();
+  const term = normText(query || '');
+  const max = Math.max(1, Math.min(Number(limit) || 50, 500));
+  const results = [];
+  for (const [key, entry] of Object.entries(_answerKeyMem)) {
+    if (!Array.isArray(entry) || !Array.isArray(entry[1])) continue;
+    const hits = entry[1];
+    if (term) {
+      const keyMatches = key.includes(term);
+      const hitMatches = hits.some((hit) =>
+        hit && (
+          normText(hit.question || '').includes(term) ||
+          normText(hit.answer || '').includes(term) ||
+          normText(hit.course || '').includes(term)
+        )
+      );
+      if (!keyMatches && !hitMatches) continue;
+    }
+    results.push({
+      key,
+      timestamp: entry[0] || 0,
+      hits: hits.slice(),
+    });
+    if (results.length >= max) break;
+  }
+  results.sort((a, b) => b.timestamp - a.timestamp);
+  return results;
 }
 
 function hitAnswerNorm(hit) {
@@ -1309,10 +1692,9 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   }
   hits = rankHits(hits);
   if (!hits.length) {
-    // Everything stored for this question was a known-wrong guess: drop the key
-    // instead of keeping a poisoned entry around.
     if (_answerKeyMem[key]) {
       delete _answerKeyMem[key];
+      _unindexAnswerKey(key);
       markKey('ak', key, true);
       scheduleFlush();
     }
@@ -1320,6 +1702,7 @@ async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
   }
 
   _answerKeyMem[key] = [Date.now() / 1000, hits];
+  _indexAnswerKey(key);
   markKey('ak', key);
   evictAnswerKeys();
   scheduleFlush();
@@ -1332,6 +1715,7 @@ function evictAnswerKeys() {
   keys.sort((a, b) => (_answerKeyMem[a][0] || 0) - (_answerKeyMem[b][0] || 0));
   for (let i = 0; i < keys.length - max; i++) {
     delete _answerKeyMem[keys[i]];
+    _unindexAnswerKey(keys[i]);
     markKey('ak', keys[i], true);
   }
 }
@@ -1377,6 +1761,7 @@ async function answerKeyImport(imported) {
     }
     if (hits.length) {
       _answerKeyMem[key] = [Math.max(existing[0] || 0, normalized[0]), hits];
+      _indexAnswerKey(key);
       markKey('ak', key);
     }
   }
@@ -1385,18 +1770,11 @@ async function answerKeyImport(imported) {
   return { added, questions: Object.keys(_answerKeyMem).length };
 }
 
-// Keys a bank file may carry that are not questions themselves. They must never be
-// imported as question entries (a bare map without the `questions` wrapper still
-// sometimes ships `updatedAt` alongside the questions).
+// Keys a bank file may carry that are not questions themselves.
 const BANK_META_KEYS = new Set(['questions', 'updatedAt', 'format', 'version', 'exportedAt']);
 
 /**
  * Extract the question map out of a bank payload.
- *
- * GitHub banks are written either as `{ "questions": { ... }, "updatedAt": "..." }`
- * (the wrapper used by the Python harvester and by this extension's exporter) or as
- * a bare `{ question: [timestamp, hits] }` map. Unwrap before iterating over the
- * question keys. Returns null when the payload is not a question map at all.
  */
 function unwrapBankQuestions(bankJson) {
   const entriesMap = (bankJson && typeof bankJson.questions === 'object' && !Array.isArray(bankJson.questions))
@@ -1408,10 +1786,6 @@ function unwrapBankQuestions(bankJson) {
 
 /**
  * Merge a GitHub bank payload into chrome.storage.local (the pull direction).
- *
- * Shared by the options page ("Sync Now") and the service worker (push sync), so
- * both accept every bank shape and count new answers identically.
- * Returns { added, questions }: newly stored answers and the resulting total.
  */
 async function mergeRemoteBankIntoLocal(bankJson) {
   const entriesMap = unwrapBankQuestions(bankJson);
@@ -1425,8 +1799,6 @@ async function mergeRemoteBankIntoLocal(bankJson) {
     pullMap[rawKey] = normalized;
   }
   const pulled = await answerKeyImport({ questions: pullMap });
-  // Persist right away so the service worker and content scripts see the merged
-  // answers without waiting for the 500 ms flush debounce.
   try {
     await flushNow();
   } catch (error) {
@@ -1437,8 +1809,10 @@ async function mergeRemoteBankIntoLocal(bankJson) {
 
 async function answerKeyDelete(key) {
   await ensureLoaded();
-  delete _answerKeyMem[key];
-  markKey('ak', key, true);
+  const normalized = normText(key) || key;
+  delete _answerKeyMem[normalized];
+  _unindexAnswerKey(normalized);
+  markKey('ak', normalized, true);
   scheduleFlush();
 }
 
@@ -1450,6 +1824,7 @@ async function answerKeyDeleteFuzzy(qNorm) {
       (storedKey.length >= 20 && (storedKey.includes(qNorm) || qNorm.includes(storedKey)));
     if (storedKey === qNorm || fuzzy) {
       delete _answerKeyMem[storedKey];
+      _unindexAnswerKey(storedKey);
       markKey('ak', storedKey, true);
     }
   }
@@ -1526,6 +1901,7 @@ async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
     markKey('ak', key);
   } else {
     delete _answerKeyMem[key];
+    _unindexAnswerKey(key);
     markKey('ak', key, true);
   }
   scheduleFlush();
@@ -1533,6 +1909,20 @@ async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
 
 async function answerKeyGetWrong(questionText) {
   return getWrongAnswers(questionText);
+}
+
+async function wrongCount() {
+  await ensureLoaded();
+  return Object.keys(_wrongMem).length;
+}
+
+async function wrongClearAll() {
+  await ensureLoaded();
+  for (const key of Object.keys(_wrongMem)) {
+    delete _wrongMem[key];
+    markKey('wrong', key, true);
+  }
+  await flushNow();
 }
 
 async function learnWrong(question, answer) {
@@ -1620,11 +2010,6 @@ async function seedDefaultBank(force = false) {
 }
 
 // ── Superscript / subscript / Moodle image normalization ────────────────────
-//  `cleanDOMToAI` in the reference toolkit turns <sup>/<sub> markup into the
-//  real unicode characters so "2<sup>3</sup>" reads exactly like a typed "2³".
-//  `unscriptDigits()` then folds both forms back to plain digits for matching,
-//  and attempt-specific pluginfile.php URLs collapse into a stable
-//  `[moodle-asset:<filename>]` token, so the same item matches across attempts.
 const SUP_MAP = {
   '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
   '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ', 'i': 'ⁱ', 'x': 'ˣ', 'y': 'ʸ', 'm': 'ᵐ',
@@ -1647,12 +2032,8 @@ function unscriptDigits(str) {
   return String(str).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]/g, (ch) => UNSCRIPT_DIGITS[ch] || ch);
 }
 
-// Moodle rewrites the context/attempt id inside every pluginfile.php URL, so the
-// raw src can never match between attempts — the filename is stable. The path
-// prefix varies (`/pluginfile.php`, `/2612/pluginfile.php`, ...).
 const MOODLE_ASSET_SRC = '(?:https?:\\/\\/[^\\s"\']*?)?\\/pluginfile\\.php\\/\\d+\\/question\\/(?:answer|questiontext|feedback)\\/\\d+(?:\\/\\d+)?\\/([^?#\\s"\']+)';
 const MOODLE_ASSET_RE = new RegExp(MOODLE_ASSET_SRC, 'i');
-// Full URL form: the `?forcedownload=1` / `#...` tail is attempt noise too.
 const MOODLE_ASSET_ANY_RE = new RegExp(MOODLE_ASSET_SRC + '(?:[?#][^\\s"\']*)?', 'gi');
 
 /** Stable `[moodle-asset:<filename>]` token for a Moodle question file URL. */
@@ -1668,10 +2049,8 @@ function moodleAssetToken(src) {
 // ── Utility: norm_text port ────────────────────────────────────────────────
 function normText(s) {
   s = (s || '').toLowerCase();
-  // Attempt-independent image token (URL or already-written token form).
   s = s.replace(MOODLE_ASSET_ANY_RE, ' moodle asset $1 ');
   s = s.replace(/\[\s*moodle\s*-\s*asset\s*:\s*([^\]]+)\]/g, ' moodle asset $1 ');
-  // 2³ / 10₂ must fold to 23 / 102 before non-ASCII characters are stripped.
   s = unscriptDigits(s);
   s = s.replace(/^(question\s*)?\d+[.)]\s*/, '');
   s = s.replace(/\bselect one\b|\bchoose\.\.\.|\btrue or false\b/g, '');
@@ -1705,22 +2084,17 @@ function similarity(a, b) {
 }
 
 // ── GitHub Contents API helpers ─────────────────────────────────────────────
-//  Shared by the service worker (background.js) and the options page
-//  (options.js), both of which include this file.
-//
-//  Three GitHub quirks matter here:
-//   1. The metadata endpoint must be requested with the JSON media type
-//      (`application/vnd.github+json`); requesting `...raw+json` returns the
-//      file body instead of the JSON envelope, so `data.sha` is missing and the
-//      subsequent PUT fails with 422 "sha wasn't supplied".
-//   2. Base64 payloads carry UTF-8 bytes. `atob()` yields one char per byte, so
-//      decoding with TextDecoder (and encoding with TextEncoder) keeps `²`,
-//      `₂`, emoji, etc. intact instead of producing mojibake.
-//   3. GET /contents only inlines `content` for files up to 1 MB. Above that
-//      GitHub answers with `"encoding": "none"` and an empty `content`, so the
-//      body has to come from the Git blobs API (up to 100 MB) or `download_url`.
-
 const GITHUB_API_ROOT = 'https://api.github.com';
+
+/** Encode each path segment separately so nested paths like "data/bank.json" preserve '/'. */
+function encodeGitHubPath(path) {
+  return String(path || 'bank.json')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join('/');
+}
 
 /** Decode a Base64 payload (Contents API / Git blob API) into a UTF-8 string. */
 function decodeBase64Utf8(b64) {
@@ -1733,7 +2107,7 @@ function decodeBase64Utf8(b64) {
 /** Encode a UTF-8 string into Base64 (btoa alone throws on non-Latin1 input). */
 function encodeBase64Utf8(str) {
   const bytes = new TextEncoder().encode(str == null ? '' : String(str));
-  const CHUNK = 0x8000; // String.fromCharCode.apply() has an argument-count limit
+  const CHUNK = 0x8000;
   let binary = '';
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
@@ -1741,7 +2115,6 @@ function encodeBase64Utf8(str) {
   return btoa(binary);
 }
 
-// Legacy names kept so older call sites keep working.
 function b64ToUtf8(b64) { return decodeBase64Utf8(b64); }
 function utf8ToB64(text) { return encodeBase64Utf8(text); }
 
@@ -1769,12 +2142,6 @@ async function gitHubErrorDetail(resp) {
   }
 }
 
-/**
- * Read the raw text behind a Contents API metadata response.
- * Inline Base64 is used when GitHub sends it; files over 1 MB (`encoding:
- * "none"`) are read from the Git blobs API, with `download_url` as a fallback.
- * Every failure reason is collected so the caller can surface it verbatim.
- */
 async function gitHubReadFileText(owner, repo, token, meta) {
   if (meta.contentB64) {
     return { text: decodeBase64Utf8(meta.contentB64), source: 'contents' };
@@ -1784,7 +2151,7 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
   if (meta.sha) {
     try {
-      const blobUrl = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/git/blobs/${encodeURIComponent(meta.sha)}`;
+      const blobUrl = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs/${encodeURIComponent(meta.sha)}`;
       const blobResp = await fetch(blobUrl, { headers: gitHubHeaders(token), cache: 'no-store' });
       if (!blobResp.ok) {
         const detail = await gitHubErrorDetail(blobResp);
@@ -1805,8 +2172,6 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
   if (meta.downloadUrl) {
     try {
-      // raw.githubusercontent.com serves the file as text; the token is still
-      // required for private repositories.
       const rawResp = await fetch(meta.downloadUrl, {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
         cache: 'no-store',
@@ -1826,18 +2191,10 @@ async function gitHubReadFileText(owner, repo, token, meta) {
 
 /**
  * Read a JSON file from a GitHub repo via the Contents API.
- *
- * Returns { sha, content, missing, parseError, size, source }:
- *  - `content` is the parsed JSON object (null when absent or unparsable)
- *  - `parseError` carries the exact JSON.parse/HTTP/decoding failure, never
- *    masked as "unparsable"
- *  - `missing` is true on 404 and `source` records where the body came from
- *    ('contents' | 'blob' | 'download_url' | 'empty' | 'error' | 'missing')
- *
- * Throws only when the metadata request itself fails (non-404 HTTP error).
  */
 async function gitHubGetFile(owner, repo, path, token) {
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?t=${Date.now()}`;
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?t=${Date.now()}`;
   const resp = await fetch(url, { headers: gitHubHeaders(token), cache: 'no-store' });
   if (resp.status === 404) {
     return { sha: null, content: null, missing: true, parseError: '', size: 0, source: 'missing' };
@@ -1897,33 +2254,39 @@ async function gitHubGetFile(owner, repo, path, token) {
 
 /**
  * Create or update a JSON file via the Contents API.
- * Always sends the current `sha` when updating (omit only for a brand-new
- * file). If the server rejects the stale sha with 409/422, re-fetch the latest
- * sha once and retry. Returns { ok, status, message }.
+ * On 409/422 (stale sha), re-fetches the latest remote file and, when
+ * `onConflictMerge(latestMeta)` is provided, re-merges before retrying so
+ * concurrent updates from another device are never overwritten.
  */
-async function gitHubPutJson(owner, repo, path, token, data, message, sha) {
+async function gitHubPutJson(owner, repo, path, token, data, message, sha, onConflictMerge = null) {
   const headers = gitHubHeaders(token);
   headers['Content-Type'] = 'application/json';
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
-  // UTF-8 aware: multi-byte characters (², ₂, emoji) survive the round trip.
-  const content = encodeBase64Utf8(JSON.stringify(data, null, 2));
+  const encodedPath = encodeGitHubPath(path);
+  const url = `${GITHUB_API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`;
 
-  const doPut = (fileSha) => {
-    const payload = { message, content };
-    if (fileSha) payload.sha = fileSha; // Omit only when creating a new file.
+  const doPut = (bodyData, fileSha) => {
+    const payload = {
+      message,
+      content: encodeBase64Utf8(JSON.stringify(bodyData, null, 2)),
+    };
+    if (fileSha) payload.sha = fileSha;
     return fetch(url, { method: 'PUT', headers, body: JSON.stringify(payload) });
   };
 
-  let resp = await doPut(sha);
+  let resp = await doPut(data, sha);
   if (resp.status === 409 || resp.status === 422) {
-    // Stale sha: re-fetch the latest metadata once and retry the PUT.
-    let latestSha = null;
-    try {
-      latestSha = (await gitHubGetFile(owner, repo, path, token)).sha;
-    } catch (e) {
-      latestSha = null;
+    const latestMeta = await gitHubGetFile(owner, repo, path, token);
+    if (!latestMeta.missing && (!latestMeta.content || typeof latestMeta.content !== 'object' || Array.isArray(latestMeta.content))) {
+      return {
+        ok: false,
+        status: resp.status,
+        message: `Conflict retry aborted: remote ${path} could not be parsed${latestMeta.parseError ? ' (' + latestMeta.parseError + ')' : ''}`,
+      };
     }
-    resp = await doPut(latestSha);
+    const mergedData = typeof onConflictMerge === 'function'
+      ? await onConflictMerge(latestMeta)
+      : data;
+    resp = await doPut(mergedData, latestMeta.sha);
   }
 
   if (resp.ok) return { ok: true, status: resp.status, message: '' };
@@ -1942,10 +2305,10 @@ function doFlush() {
       STORAGE_KEYS.WRONG,
       STORAGE_KEYS.SEARCH,
     ]);
-    // Synchronous merge section: no await between merge and set().
     _answerKeyMem = overlayPending('ak', validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {}), _answerKeyMem);
     _wrongMem = overlayPending('wrong', validateWrong(stored[STORAGE_KEYS.WRONG] || {}), _wrongMem);
     _searchMem = overlayPending('search', validateSearch(stored[STORAGE_KEYS.SEARCH] || {}), _searchMem);
+    _rebuildTokenIndex();
     for (const kind of ['ak', 'wrong', 'search']) {
       _dirty[kind].clear();
       _deleted[kind].clear();
@@ -1958,881 +2321,1827 @@ function doFlush() {
   });
 }
 
+
+window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
+window.__qbTmReloadConfig = loadConfig;
+
+loadConfig().then(() => {
+  const isMoodle = moodleAllowedHost(location.hostname);
+  if (isMoodle) {
+    (function () {
+
 ;
-// PROVIDERS
-const BOOL_TRUE = new Set(['true','1','yes','t']);
-const BOOL_FALSE = new Set(['false','0','no','f']);
-const FIG_HINTS = ['see fig','figure','see the diagram','refer to the image'];
+// ─────────────────────────────────────────────────────────────────────────────
+//  PROVIDERS — tiered solver waterfall:
+//  Local Bank -> amauoed.com -> Web Search -> FreeLLMAPI -> Gemini ->
+//  OpenRouter (web optional) -> Ollama
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BOOL_TRUE = new Set(['true', '1', 'yes', 't']);
+const BOOL_FALSE = new Set(['false', '0', 'no', 'f']);
+const FIG_HINTS = ['see fig', 'figure', 'see the diagram', 'refer to the image'];
 const BLANK_RE = /[_\-]{3,}/;
-const MAX_Q_CHARS = 1200; const WEB_Q_CHARS = 380;
-const RETRY_VARIANTS = ['','Your earlier answer was wrong. Give a DIFFERENT concept.','Your earlier answers were wrong. Answer with the FULL formal name.','Your earlier answers were wrong. Identify the broader topic.','Your earlier answers were wrong. Answer with the most standard textbook term.'];
+const RETRY_VARIANTS = [
+  '',
+  'Your earlier answer was wrong. Give a DIFFERENT concept.',
+  'Your earlier answers were wrong. Answer with the FULL formal name.',
+  'Your earlier answers were wrong. Identify the broader topic.',
+  'Your earlier answers were wrong. Answer with the most standard textbook term.',
+];
 const ACRO_RE = /^[A-Z]{2,6}$/;
-const STOP_WORDS = new Set(['this','that','these','those','is','are','was','were','the','a','an','also','called','which','what','it','its','of','in','on','for','to','and','or','be','by','with','as','at','from','not','can','does']);
-let _orCooldownUntil = 0; let _orWebDisabled = false; let _orDisabled = false;
-let _geminiCooldownUntil = 0; let _geminiDisabled = false;
-function orCooling(){return !String(cfg('OPENROUTER_API_KEY')||'').trim()||_orDisabled||Date.now()/1000<_orCooldownUntil;}
-function orTriggerCooldown(){_orCooldownUntil=Date.now()/1000+(Number(cfg('OPENROUTER_COOLDOWN'))||180);}
-function geminiCooling(){return !String(cfg('GEMINI_API_KEY')||'').trim()||_geminiDisabled||Date.now()/1000<_geminiCooldownUntil;}
-// `GEMINI_API_KEY` may hold several backup keys (comma/newline separated); the
-// background worker rotates to the next ready key whenever one is rate-limited.
-function geminiKeyCount(){
-  const keys=String(cfg('GEMINI_API_KEY')||'').split(/[\s,;]+/).map((key)=>key.trim()).filter(Boolean);
-  return keys.length;
+const STOP_WORDS = new Set([
+  'this', 'that', 'these', 'those', 'is', 'are', 'was', 'were', 'the', 'a', 'an',
+  'also', 'called', 'which', 'what', 'it', 'its', 'of', 'in', 'on', 'for', 'to',
+  'and', 'or', 'be', 'by', 'with', 'as', 'at', 'from', 'not', 'can', 'does',
+]);
+
+let _orCooldownUntil = 0;
+let _orWebDisabled = false;
+let _orDisabled = false;
+let _geminiCooldownUntil = 0;
+let _geminiDisabled = false;
+let _customCooldownUntil = 0;
+let _customDisabled = false;
+
+function orCooling() {
+  return !String(cfg('OPENROUTER_API_KEY') || '').trim() || _orDisabled || Date.now() / 1000 < _orCooldownUntil;
+}
+function orTriggerCooldown() {
+  _orCooldownUntil = Date.now() / 1000 + (Number(cfg('OPENROUTER_COOLDOWN')) || 180);
+}
+function geminiCooling() {
+  return !String(cfg('GEMINI_API_KEY') || '').trim() || _geminiDisabled || Date.now() / 1000 < _geminiCooldownUntil;
+}
+function geminiKeyCount() {
+  return String(cfg('GEMINI_API_KEY') || '').split(/[\s,;]+/).map((key) => key.trim()).filter(Boolean).length;
+}
+function customCooling() {
+  return !String(cfg('CUSTOM_API_KEY') || '').trim() || _customDisabled || Date.now() / 1000 < _customCooldownUntil;
+}
+function customTriggerCooldown() {
+  _customCooldownUntil = Date.now() / 1000 + (Number(cfg('OPENROUTER_COOLDOWN')) || 180);
 }
 
-// Every transport failure is recorded here (provider + HTTP status + reason) so
-// askAiText() can report which provider was tried and why it produced nothing,
-// instead of the HUD ending on a bare "No AI answer (check API key/credits...)".
+// Reset session-disabled flags automatically when the user saves a new API key.
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes) return;
+    if (changes.OPENROUTER_API_KEY) { _orDisabled = false; _orWebDisabled = false; _orCooldownUntil = 0; }
+    if (changes.GEMINI_API_KEY) { _geminiDisabled = false; _geminiCooldownUntil = 0; }
+    if (changes.CUSTOM_API_KEY) { _customDisabled = false; _customCooldownUntil = 0; }
+  });
+}
+
 let _lastProviderFailure = null;
-function _recordProviderFailure(name,status,reason){
-  _lastProviderFailure={name:String(name||''),status:Number(status)||0,reason:String(reason||'').trim()||'unknown error',at:Date.now()};
+function _recordProviderFailure(name, status, reason) {
+  _lastProviderFailure = {
+    name: String(name || ''),
+    status: Number(status) || 0,
+    reason: String(reason || '').trim() || 'unknown error',
+    at: Date.now(),
+  };
 }
-function _providerFailure(name,since){
-  const failure=_lastProviderFailure;
-  if(!failure||failure.name!==name||failure.at<since)return'';
-  return (failure.status?'HTTP '+failure.status+' - ':'')+failure.reason;
+function _providerFailure(name, since) {
+  const failure = _lastProviderFailure;
+  if (!failure || failure.name !== name || failure.at < since) return '';
+  return (failure.status ? 'HTTP ' + failure.status + ' - ' : '') + failure.reason;
 }
-function _skipReason(disabled,until){
-  if(disabled)return'disabled for this session after a key/credits error';
-  const left=Math.ceil(until-Date.now()/1000);
-  return left>0?'cooling down for '+left+'s after a recent error':'';
+function _skipReason(disabled, until) {
+  if (disabled) return 'disabled for this session after a key/credits error';
+  const left = Math.ceil(until - Date.now() / 1000);
+  return left > 0 ? 'cooling down for ' + left + 's after a recent error' : '';
 }
 
-async function bgFetch(action,payload={},timeout=60000){return new Promise((resolve,reject)=>{const id=Date.now()+'_'+Math.random().toString(36).slice(2,8);let settled=false;const timer=setTimeout(()=>{settled=true;reject(new Error(action+' timed out'));},timeout);chrome.runtime.sendMessage({action,payload,_reqId:id},(response)=>{if(settled)return;settled=true;clearTimeout(timer);if(chrome.runtime.lastError){reject(new Error(chrome.runtime.lastError.message));return;}if(!response){reject(new Error(action+' returned no response'));return;}if(response.error){const error=new Error(response.error);error.status=response.status;error.allKeysLimited=response.allKeysLimited===true;error.keysTried=response.keysTried||0;error.keyCount=response.keyCount||0;reject(error);return;}if(response._reqId!==id){reject(new Error(action+' returned a mismatched response'));return;}resolve(response);});});}
+async function bgFetch(action, payload = {}, timeout = 60000) {
+  return new Promise((resolve, reject) => {
+    const id = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(new Error(action + ' timed out'));
+    }, timeout);
+    chrome.runtime.sendMessage({ action, payload, _reqId: id }, (response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response) {
+        reject(new Error(action + ' returned no response'));
+        return;
+      }
+      if (response.error) {
+        const error = new Error(response.error);
+        error.status = response.status;
+        error.allKeysLimited = response.allKeysLimited === true;
+        error.keysTried = response.keysTried || 0;
+        error.keyCount = response.keyCount || 0;
+        reject(error);
+        return;
+      }
+      if (response._reqId !== id) {
+        reject(new Error(action + ' returned a mismatched response'));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
 
-function _warnOpenRouter(message,quiet){console.warn('[OpenRouter] '+message);if(!quiet&&typeof logHUD==='function')logHUD('warn','OpenRouter: '+message);}
-async function postOpenRouter(messages,opts={}){
-  if(orCooling())return null;
-  const model=opts.model||cfg('OPENROUTER_MODEL');
-  const maxTokens=opts.maxTokens||64;
-  const temperature=opts.temperature??0.1;
-  const timeoutSeconds=opts.timeout||25;
-  const body={model,messages,temperature,max_tokens:maxTokens};
-  if(opts.plugins)body.plugins=opts.plugins;
-  if(!String(cfg('OPENROUTER_API_KEY')||'').trim())return null;
-  const webPlugin=Boolean(opts.plugins&&opts.plugins.some((plugin)=>plugin.id==='web'));
-  for(let attempt=0;attempt<2;attempt++){
-    try{
-      const response=await bgFetch('postOpenRouter',{body,timeout:timeoutSeconds*1000},(timeoutSeconds+5)*1000);
-      if(response.error||[400,401,402,429].includes(response.status)){
-        const error=new Error(typeof response.error==='string'?response.error:JSON.stringify(response.error||'OpenRouter request failed'));
-        error.status=response.status;
+function _warnOpenRouter(message, quiet) {
+  console.warn('[OpenRouter] ' + message);
+  if (!quiet && typeof logHUD === 'function') logHUD('warn', 'OpenRouter: ' + message);
+}
+
+async function postOpenRouter(messages, opts = {}) {
+  if (orCooling()) return null;
+  const model = opts.model || cfg('OPENROUTER_MODEL');
+  const maxTokens = opts.maxTokens || 64;
+  const temperature = opts.temperature ?? 0.1;
+  const timeoutSeconds = opts.timeout || 25;
+  const body = { model, messages, temperature, max_tokens: maxTokens };
+  if (opts.plugins) body.plugins = opts.plugins;
+  if (!String(cfg('OPENROUTER_API_KEY') || '').trim()) return null;
+  const webPlugin = Boolean(opts.plugins && opts.plugins.some((plugin) => plugin.id === 'web'));
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await bgFetch('postOpenRouter', { body, timeout: timeoutSeconds * 1000 }, (timeoutSeconds + 5) * 1000);
+      if (response.error || [400, 401, 402, 429].includes(response.status)) {
+        const error = new Error(typeof response.error === 'string' ? response.error : JSON.stringify(response.error || 'OpenRouter request failed'));
+        error.status = response.status;
         throw error;
       }
       return response;
-    }catch(error){
-      const status=error.status||Number((error.message.match(/\bHTTP\s+(\d{3})\b/i)||[])[1])||0;
-      const reason=error.message||'Unknown OpenRouter error';
-      _recordProviderFailure('OpenRouter',status,reason);
-      if(status===401){
-        _orDisabled=true;
-        _orWebDisabled=true;
-        _warnOpenRouter(`Invalid API key (${reason}); OpenRouter disabled for this session.`,opts.quiet);
+    } catch (error) {
+      const status = error.status || Number((error.message.match(/\bHTTP\s+(\d{3})\b/i) || [])[1]) || 0;
+      const reason = error.message || 'Unknown OpenRouter error';
+      _recordProviderFailure('OpenRouter', status, reason);
+      if (status === 401) {
+        _orDisabled = true;
+        _orWebDisabled = true;
+        _warnOpenRouter(`Invalid API key (${reason}); OpenRouter disabled for this session.`, opts.quiet);
         return null;
       }
-      if(status===402){
-        _orDisabled=true;
-        _orWebDisabled=true;
-        _warnOpenRouter(`Insufficient credits (${reason}); OpenRouter disabled for this session.`,opts.quiet);
+      if (status === 402) {
+        _orDisabled = true;
+        _orWebDisabled = true;
+        _warnOpenRouter(`Insufficient credits (${reason}); OpenRouter disabled for this session.`, opts.quiet);
         return null;
       }
-      if(webPlugin&&status===400){
-        _orWebDisabled=true;
-        _warnOpenRouter(`web plugin failed (${reason}); disabling it and falling back to standard OpenRouter.`,opts.quiet);
+      if (webPlugin && status === 400) {
+        _orWebDisabled = true;
+        _warnOpenRouter(`web plugin failed (${reason}); disabling it and falling back to standard OpenRouter.`, opts.quiet);
         return null;
       }
-      if(status===429){
-        if(attempt===0){
-          _warnOpenRouter(`Rate limited (${reason}); retrying once in 2.5 seconds.`,opts.quiet);
-          await new Promise((resolve)=>setTimeout(resolve,2500));
+      if (status === 429) {
+        if (attempt === 0) {
+          _warnOpenRouter(`Rate limited (${reason}); retrying once in 2.5 seconds.`, opts.quiet);
+          await new Promise((resolve) => setTimeout(resolve, 2500));
           continue;
         }
         orTriggerCooldown();
-        _warnOpenRouter(`Still rate limited (${reason}); cooling down and falling back to local Ollama.`,opts.quiet);
+        _warnOpenRouter(`Still rate limited (${reason}); cooling down and falling back to local Ollama.`, opts.quiet);
         return null;
       }
-      if(status===503){
+      if (status === 503) {
         orTriggerCooldown();
-        _warnOpenRouter(`Service unavailable (${reason}); cooling down and falling back to local Ollama.`,opts.quiet);
+        _warnOpenRouter(`Service unavailable (${reason}); cooling down and falling back to local Ollama.`, opts.quiet);
         return null;
       }
-      _warnOpenRouter(reason,opts.quiet);
+      _warnOpenRouter(reason, opts.quiet);
       return null;
     }
   }
   return null;
 }
-async function postGemini(messages,opts={}){
-  if(geminiCooling())return null;
-  const contents=[];
-  for(const message of messages){
-    const parts=[];
-    const items=Array.isArray(message.content)?message.content:[{type:'text',text:message.content||''}];
-    for(const item of items){
-      if(item.type==='image_url'){
-        const url=item.image_url&&item.image_url.url||'';
-        const image=url.match(/^data:([^;]+);base64,(.+)$/);
-        if(image)parts.push({inlineData:{mimeType:image[1],data:image[2]}});
-      }else if(item.text)parts.push({text:item.text});
+
+async function postGemini(messages, opts = {}) {
+  if (geminiCooling()) return null;
+  const contents = [];
+  for (const message of messages) {
+    const parts = [];
+    const items = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content || '' }];
+    for (const item of items) {
+      if (item.type === 'image_url') {
+        const url = (item.image_url && item.image_url.url) || '';
+        const image = url.match(/^data:([^;]+);base64,(.+)$/);
+        if (image) parts.push({ inlineData: { mimeType: image[1], data: image[2] } });
+      } else if (item.text) {
+        parts.push({ text: item.text });
+      }
     }
-    if(parts.length)contents.push({role:message.role==='assistant'?'model':'user',parts});
+    if (parts.length) contents.push({ role: message.role === 'assistant' ? 'model' : 'user', parts });
   }
-  try{
-    const timeoutSeconds=opts.timeout||30;
-    const response=await bgFetch('postGemini',{
-      model:cfg('GEMINI_MODEL'),
+  try {
+    const timeoutSeconds = opts.timeout || 30;
+    const response = await bgFetch('postGemini', {
+      model: cfg('GEMINI_MODEL'),
       contents,
-      generationConfig:{temperature:opts.temperature??0.1,maxOutputTokens:opts.maxTokens||128},
-      timeout:timeoutSeconds*1000,
-    },(timeoutSeconds+5)*1000);
-    return {choices:[{message:{content:response.text||''}}]};
-  }catch(error){
-    const status=error.status||Number((error.message.match(/\bHTTP\s+(\d{3})\b/i)||[])[1])||0;
-    const keyCount=geminiKeyCount();
-    if(status===401||status===402)_geminiDisabled=true;
-    if(status===429||status===503){
-      const base=Number(cfg('GEMINI_KEY_COOLDOWN'))||Number(cfg('OPENROUTER_COOLDOWN'))||180;
-      // The worker already rotated through every key: with backups configured,
-      // retry soon instead of cooling Gemini down for the whole window.
-      _geminiCooldownUntil=Date.now()/1000+(keyCount>1?Math.min(base,30):base);
+      generationConfig: { temperature: opts.temperature ?? 0.1, maxOutputTokens: opts.maxTokens || 128 },
+      timeout: timeoutSeconds * 1000,
+    }, (timeoutSeconds + 5) * 1000);
+    return { choices: [{ message: { content: response.text || '' } }] };
+  } catch (error) {
+    const status = error.status || Number((error.message.match(/\bHTTP\s+(\d{3})\b/i) || [])[1]) || 0;
+    const keyCount = geminiKeyCount();
+    if (status === 401 || status === 402) _geminiDisabled = true;
+    if (status === 429 || status === 503) {
+      const base = Number(cfg('GEMINI_KEY_COOLDOWN')) || Number(cfg('OPENROUTER_COOLDOWN')) || 180;
+      _geminiCooldownUntil = Date.now() / 1000 + (keyCount > 1 ? Math.min(base, 30) : base);
     }
-    const rotated=keyCount>1&&error.allKeysLimited
-      ? ' All '+keyCount+' Gemini keys are rate-limited or invalid; rotation resumes automatically.'
+    const rotated = keyCount > 1 && error.allKeysLimited
+      ? ' All ' + keyCount + ' Gemini keys are rate-limited or invalid; rotation resumes automatically.'
       : '';
-    const fallback=status===401||status===402
+    const fallback = status === 401 || status === 402
       ? ' Gemini disabled for this session; trying the next fallback.'
-      : status===429||status===503
+      : status === 429 || status === 503
         ? ' Gemini cooling down; trying the next fallback.'
         : '';
-    console.warn('[Gemini] '+error.message+fallback+rotated);
-    _recordProviderFailure('Gemini',status,error.message);
-    if(!opts.quiet&&typeof logHUD==='function')logHUD('warn','Gemini: '+error.message+fallback+rotated);
+    console.warn('[Gemini] ' + error.message + fallback + rotated);
+    _recordProviderFailure('Gemini', status, error.message);
+    if (!opts.quiet && typeof logHUD === 'function') logHUD('warn', 'Gemini: ' + error.message + fallback + rotated);
     return null;
   }
 }
-async function postOllama(prompt,opts={}){const model=opts.model||cfg('OLLAMA_MODEL');const numPredict=opts.numPredict||120;const temperature=Number(opts.temperature??0.1)||0.1;const rawTimeout = Number(cfg('OLLAMA_TIMEOUT_MS'));const to = rawTimeout < 1000 ? Math.max(rawTimeout * 1000, 30000) : Math.max(rawTimeout, 30000);const numCtx = parseInt(cfg('OLLAMA_NUM_CTX'), 10) || 4096;const images=opts.images||[];const payload={model,prompt,stream:false,keep_alive:cfg('OLLAMA_KEEP_ALIVE'),options:{temperature, num_ctx:numCtx, num_predict:numPredict}};if(images.length)payload.images=images;try{return await bgFetch('postOllama',{payload,timeout:to});}catch(e){console.warn('[Ollama] '+e.message);_recordProviderFailure('Ollama',e.status,e.message);if(!opts.quiet&&typeof logHUD==='function')logHUD('warn','Ollama fallback: '+e.message);return null;}}
 
-let _customCooldownUntil = 0; let _customDisabled = false;
-function customCooling(){return !String(cfg('CUSTOM_API_KEY')||'').trim()||_customDisabled||Date.now()/1000<_customCooldownUntil;}
-function customTriggerCooldown(){_customCooldownUntil=Date.now()/1000+(Number(cfg('OPENROUTER_COOLDOWN'))||180);}
+async function postOllama(prompt, opts = {}) {
+  const model = opts.model || cfg('OLLAMA_MODEL');
+  const numPredict = opts.numPredict || 120;
+  const temperature = Number(opts.temperature ?? 0.1) || 0.1;
+  const timeoutMs = ollamaTimeoutMs(opts.timeout ? opts.timeout * 1000 : cfg('OLLAMA_TIMEOUT_MS'));
+  const numCtx = parseInt(cfg('OLLAMA_NUM_CTX'), 10) || DEFAULTS.OLLAMA_NUM_CTX;
+  const rawImages = opts.images || [];
+  const images = rawImages.map((img) => (typeof img === 'string' ? img : img && img.base64)).filter(Boolean);
+  const payload = {
+    model,
+    prompt,
+    stream: false,
+    keep_alive: cfg('OLLAMA_KEEP_ALIVE'),
+    options: { temperature, num_ctx: numCtx, num_predict: numPredict },
+  };
+  if (images.length) payload.images = images;
+  try {
+    return await bgFetch('postOllama', { payload, timeout: timeoutMs }, timeoutMs + 5000);
+  } catch (e) {
+    console.warn('[Ollama] ' + e.message);
+    _recordProviderFailure('Ollama', e.status, e.message);
+    if (!opts.quiet && typeof logHUD === 'function') logHUD('warn', 'Ollama fallback: ' + e.message);
+    return null;
+  }
+}
 
-async function postCustomApi(messages,opts={}){
-  if(customCooling())return null;
+async function resolveCustomModel() {
+  try {
+    const response = await bgFetch('resolveCustomModel', {}, 15000);
+    return response && typeof response.model === 'string' ? response.model : null;
+  } catch (e) {
+    console.warn('[CustomAPI] Failed to resolve model from /models:', e.message);
+    return null;
+  }
+}
+
+async function postCustomApi(messages, opts = {}) {
+  if (customCooling()) return null;
   const customModel = opts.model || cfg('CUSTOM_MODEL') || 'auto';
   const maxTokens = opts.maxTokens || 64;
   const temperature = opts.temperature ?? 0.1;
   const timeoutSeconds = opts.timeout || 25;
   const baseUrl = cfg('CUSTOM_API_BASE_URL') || 'https://api.freellmapi.com/v1';
-  const body = {model: customModel, messages, temperature, max_tokens: maxTokens};
+  const body = { model: customModel, messages, temperature, max_tokens: maxTokens };
   const isAutoModel = (customModel === 'auto' || !customModel);
-  if(!opts.quiet&&typeof logHUD==='function') logHUD('info', 'FreeLLMAPI: querying '+baseUrl+' (model: '+(isAutoModel?'auto':customModel)+')...');
-  for(let attempt=0; attempt<2; attempt++){
-    try{
-      const response = await bgFetch('postCustomApi',{body,timeout:timeoutSeconds*1000},(timeoutSeconds+5)*1000);
-      if(response.error || [400,401,402,429].includes(response.status)){
+  if (!opts.quiet && typeof logHUD === 'function') {
+    logHUD('info', 'FreeLLMAPI: querying ' + baseUrl + ' (model: ' + (isAutoModel ? 'auto' : customModel) + ')...');
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await bgFetch('postCustomApi', { body, timeout: timeoutSeconds * 1000 }, (timeoutSeconds + 5) * 1000);
+      if (response.error || [400, 401, 402, 429].includes(response.status)) {
         const status = response.status || 0;
-        const errorText = response.error ? (typeof response.error==='string'?response.error:JSON.stringify(response.error)) : 'Custom API request failed';
+        const errorText = response.error ? (typeof response.error === 'string' ? response.error : JSON.stringify(response.error)) : 'Custom API request failed';
         const error = new Error(errorText);
         error.status = status;
         error.body = response.body;
         throw error;
       }
       return response;
-    }catch(error){
-      const status = error.status || Number((error.message.match(/\bHTTP\s+(\d{3})\b/i)||[])[1]) || 0;
+    } catch (error) {
+      const status = error.status || Number((error.message.match(/\bHTTP\s+(\d{3})\b/i) || [])[1]) || 0;
       const reason = error.message || 'Unknown Custom API error';
-      _recordProviderFailure('FreeLLMAPI',status,reason+(error.body?' | '+error.body:''));
-      if(!opts.quiet&&typeof logHUD==='function') logHUD('warn', 'FreeLLMAPI error: HTTP '+status+' - '+reason+(error.body?' | '+error.body:''));
-      if(status===401){
-        _customDisabled=true;
-        console.warn('[CustomAPI] Invalid API key ('+reason+'); Custom API disabled for this session.');
+      _recordProviderFailure('FreeLLMAPI', status, reason + (error.body ? ' | ' + error.body : ''));
+      if (!opts.quiet && typeof logHUD === 'function') {
+        logHUD('warn', 'FreeLLMAPI error: HTTP ' + status + ' - ' + reason + (error.body ? ' | ' + error.body : ''));
+      }
+      if (status === 401 || status === 402) {
+        _customDisabled = true;
+        console.warn('[CustomAPI] Key/credits error (' + reason + '); disabled for this session.');
         return null;
       }
-      if(status===402){
-        _customDisabled=true;
-        console.warn('[CustomAPI] Insufficient credits ('+reason+'); Custom API disabled for this session.');
-        return null;
-      }
-      if(status===429){
-        if(attempt===0){
-          console.warn('[CustomAPI] Rate limited ('+reason+'); retrying once in 2.5 seconds.');
-          await new Promise((resolve)=>setTimeout(resolve,2500));
+      if (status === 429) {
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
           continue;
         }
         customTriggerCooldown();
-        console.warn('[CustomAPI] Still rate limited ('+reason+'); cooling down and falling back.');
         return null;
       }
-      if(status===503){
+      if (status === 503) {
         customTriggerCooldown();
-        console.warn('[CustomAPI] Service unavailable ('+reason+'); cooling down and falling back.');
         return null;
       }
-      if(isAutoModel && (status===400 || status===404)){
-        if(!opts.quiet&&typeof logHUD==='function') logHUD('info', 'FreeLLMAPI: "auto" model failed, will try to resolve model from /models endpoint');
+      if (isAutoModel && (status === 400 || status === 404)) {
         const resolved = await resolveCustomModel();
-        if(resolved){
+        if (resolved) {
           body.model = resolved;
-          if(!opts.quiet&&typeof logHUD==='function') logHUD('info', 'FreeLLMAPI: resolved model to '+resolved+', retrying...');
           continue;
         }
       }
-      console.warn('[CustomAPI] '+reason);
       return null;
     }
   }
   return null;
 }
 
-async function resolveCustomModel(){
-  const baseUrl = (cfg('CUSTOM_API_BASE_URL') || 'https://api.freellmapi.com/v1').replace(/\/+$/,'');
-  const url = baseUrl + '/models';
-  const apiKey = cfg('CUSTOM_API_KEY');
-  const headers = { 'Content-Type': 'application/json' };
-  if(apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
-  try{
-    const response = await fetch(url, { headers, timeout: 10000 });
-    if(!response.ok) return null;
-    const data = await response.json();
-    const models = data?.data || data?.models || [];
-    for(const m of models){
-      const id = m.id || m.name || m.model;
-      if(id && typeof id === 'string') return id;
+// ── Response parsing helpers ────────────────────────────────────────────────
+function _excludedNote(list) {
+  const arr = [...new Set((list || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  return arr.length ? 'Excluded wrong answers (DO NOT choose these): ' + arr.join(', ') : '';
+}
+function _optionNorm(text) {
+  text = unscriptDigits(String(text || '')).toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+  return text.replace(/\s+/g, ' ').trim();
+}
+function _wrongOptionIndices(options, wrongAnswers) {
+  const n = new Set((wrongAnswers || []).map((a) => _optionNorm(a)).filter(Boolean));
+  if (!n.size) return new Set();
+  const idx = [];
+  for (let i = 0; i < options.length; i++) if (n.has(_optionNorm(options[i]))) idx.push(i);
+  return new Set(idx);
+}
+function _readBool(raw) {
+  const text = (raw || '').trim().toLowerCase();
+  if (/\b(true|yes|correct)\b/.test(text)) return true;
+  if (/\b(false|no|incorrect)\b/.test(text)) return false;
+  return null;
+}
+function _boolIndex(options, wantTrue) {
+  const wanted = wantTrue ? BOOL_TRUE : BOOL_FALSE;
+  return options.findIndex((option) => wanted.has((option || '').trim().toLowerCase()));
+}
+function _isBoolQuestion(options) {
+  return options.length === 2 && options.every((option) =>
+    BOOL_TRUE.has(option.trim().toLowerCase()) || BOOL_FALSE.has(option.trim().toLowerCase())
+  );
+}
+function _interpretAnswer(raw, options, excluded) {
+  if (!raw) return -1;
+  const t = raw.trim();
+  const n = options.length;
+  const e = new Set(excluded || []);
+  const el = [];
+  for (let i = 0; i < n; i++) if (!e.has(i)) el.push(i);
+  const ue = el.length ? el : [...Array(n).keys()];
+  const m = t.match(/\b(\d{1,2})\b/);
+  if (m) {
+    const i = parseInt(m[1], 10) - 1;
+    if (i >= 0 && i < n && ue.includes(i)) return i;
+  }
+  let lm = t.match(/^\s*[\(\[\{]?\s*([A-Za-z])\s*[\)\]\.:\-]/);
+  if (!lm) lm = t.match(/^\s*([A-Za-z])\s*$/);
+  if (lm) {
+    const i = lm[1].toUpperCase().charCodeAt(0) - 65;
+    if (i >= 0 && i < n && ue.includes(i)) return i;
+  }
+  const lw = t.toLowerCase();
+  let b = -1;
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    if (e.has(i)) continue;
+    const o = options[i].toLowerCase().trim();
+    if (!o) continue;
+    if (o === lw) return i;
+    let sc = similarity(lw, o);
+    if (o.includes(lw) || lw.includes(o)) sc = Math.max(sc, 0.85);
+    if (sc > s) { b = i; s = sc; }
+  }
+  return s >= 0.6 ? b : -1;
+}
+function _interpretFilteredAnswer(raw, options, originalIndices) {
+  const index = _interpretAnswer(raw, options);
+  if (index !== -1) return index;
+  const match = (raw || '').match(/^\s*(?:option\s*)?(\d{1,2})\s*[.)]?\s*$/i);
+  if (!match) return -1;
+  const originalIndex = parseInt(match[1], 10) - 1;
+  return originalIndices.indexOf(originalIndex);
+}
+function _interpretMulti(raw, options, excluded) {
+  if (!raw) return [];
+  const blocked = new Set(excluded || []);
+  const picked = new Set();
+  for (const match of raw.matchAll(/\b(\d{1,2})\b/g)) {
+    const index = parseInt(match[1], 10) - 1;
+    if (index >= 0 && index < options.length && !blocked.has(index)) picked.add(index);
+  }
+  if (!picked.size) {
+    for (const match of raw.matchAll(/(?<![A-Za-z])([A-Za-z])(?![A-Za-z])/g)) {
+      const index = match[1].toUpperCase().charCodeAt(0) - 65;
+      if (index >= 0 && index < options.length && !blocked.has(index)) picked.add(index);
     }
-    return null;
-  }catch(e){
-    console.warn('[CustomAPI] Failed to resolve model from /models:', e.message);
-    return null;
   }
+  if (!picked.size) {
+    const text = raw.toLowerCase();
+    for (let i = 0; i < options.length; i++) {
+      if (!blocked.has(i) && options[i] && text.includes(options[i].toLowerCase())) picked.add(i);
+    }
+  }
+  return [...picked].sort((a, b) => a - b);
+}
+function _domainNote(question) {
+  const text = (question || '').toLowerCase();
+  if (/\b(computer|network|software|database|program|technical|server|internet|protocol)\b/.test(text)) {
+    return 'This is a technical/IT item — use precise technical terminology.';
+  }
+  if (/\b(history|society|culture|politic|economic|philosoph|psycholog|sociolog|humanit)\b/.test(text)) {
+    return 'This is a social/humanities item — use the standard scholarly term.';
+  }
+  return 'Use the standard textbook term or phrase.';
+}
+function _cleanTyped(raw, blank) {
+  let text = (raw || '').trim().replace(/^```[a-zA-Z]*\s*|\s*```$/g, '').trim().split('\n')[0] || '';
+  text = text.replace(/^(answer|ans|correct answer)\s*[:-]\s*/i, '')
+    .replace(/^[*\-\u2022]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .trim()
+    .replace(/^["'`*]+|["'`*]+$/g, '')
+    .replace(/\s+/g, ' ');
+  if (blank) {
+    text = text.replace(/\s\([^)]*\)\s*$/, '').trim();
+    if (text.length > 40) text = text.replace(/\s*[-–—/]\s*.*$/, '').trim();
+  }
+  if (text.length > 160) text = text.split(/(?<=[.!?])\s/)[0] || text.slice(0, 160);
+  text = text.replace(/[.]$/, '').trim();
+  return /^(none|unknown|n\/a)$/i.test(text) ? '' : text;
+}
+function _echoesQuestion(answer, question) {
+  const text = (answer || '').trim();
+  if (!/^[A-Z]{2,6}$/.test(text)) return false;
+  const initials = (question || '').match(/[A-Za-z]+/g) || [];
+  return initials.map((word) => word[0].toUpperCase()).join('').includes(text);
+}
+function _searchQuery(question) {
+  const text = (question || '')
+    .replace(/[_-]{2,}/g, ' ')
+    .replace(/\b(select one|select one or more|choose\.{0,3}|true or false|answer\s*\d+\s*[.)]?\s*question\s*\d+)\b/gi, ' ');
+  const words = (text.match(/[A-Za-z0-9-]+/g) || []).filter((word) => !STOP_WORDS.has(word.toLowerCase()));
+  return words.slice(0, 14).join(' ').slice(0, 120) || text.replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
-function _excludedNote(list){const arr=[...new Set((list||[]).map((x)=>String(x||'').trim()).filter(Boolean))];return arr.length?'Excluded wrong answers (DO NOT choose these): '+arr.join(', '):'';}
-function _optionNorm(text){text=unscriptDigits(String(text||'')).toLowerCase().replace(/[^a-z0-9 ]/g,' ');return text.replace(/\s+/g,' ').trim();}
-function _wrongOptionIndices(options,wrongAnswers){const n=new Set((wrongAnswers||[]).map(a=>_optionNorm(a)).filter(Boolean));if(!n.size)return new Set();const idx=[];for(let i=0;i<options.length;i++)if(n.has(_optionNorm(options[i])))idx.push(i);return new Set(idx);}
-function _readBool(raw){const text=(raw||'').trim().toLowerCase();if(/\b(true|yes|correct)\b/.test(text))return true;if(/\b(false|no|incorrect)\b/.test(text))return false;return null;}
-function _boolIndex(options,wantTrue){const wanted=wantTrue?BOOL_TRUE:BOOL_FALSE;return options.findIndex((option)=>wanted.has((option||'').trim().toLowerCase()));}
-function _isBoolQuestion(options){return options.length===2&&options.every((option)=>BOOL_TRUE.has(option.trim().toLowerCase())||BOOL_FALSE.has(option.trim().toLowerCase()));}
-function _interpretFilteredAnswer(raw,options,originalIndices){const index=_interpretAnswer(raw,options);if(index!==-1)return index;const match=(raw||'').match(/^\s*(?:option\s*)?(\d{1,2})\s*[.)]?\s*$/i);if(!match)return-1;const originalIndex=parseInt(match[1],10)-1;return originalIndices.indexOf(originalIndex);}
-function _interpretMulti(raw,options,excluded){if(!raw)return[];const blocked=new Set(excluded||[]),picked=new Set();for(const match of raw.matchAll(/\b(\d{1,2})\b/g)){const index=parseInt(match[1],10)-1;if(index>=0&&index<options.length&&!blocked.has(index))picked.add(index);}if(!picked.size){for(const match of raw.matchAll(/(?<![A-Za-z])([A-Za-z])(?![A-Za-z])/g)){const index=match[1].toUpperCase().charCodeAt(0)-65;if(index>=0&&index<options.length&&!blocked.has(index))picked.add(index);}}if(!picked.size){const text=raw.toLowerCase();for(let i=0;i<options.length;i++)if(!blocked.has(i)&&options[i]&&text.includes(options[i].toLowerCase()))picked.add(i);}return[...picked].sort((a,b)=>a-b);}
-function _domainNote(question){const text=(question||'').toLowerCase();if(/\b(computer|network|software|database|program|technical|server|internet|protocol)\b/.test(text))return'This is a technical/IT item — use precise technical terminology.';if(/\b(history|society|culture|politic|economic|philosoph|psycholog|sociolog|humanit)\b/.test(text))return'This is a social/humanities item — use the standard scholarly term.';return'Use the standard textbook term or phrase.';}
-function _cleanTyped(raw,blank){let text=(raw||'').trim().replace(/^```[a-zA-Z]*\s*|\s*```$/g,'').trim().split('\n')[0]||'';text=text.replace(/^(answer|ans|correct answer)\s*[:-]\s*/i,'').replace(/^[*\-\u2022]\s+/,'').replace(/^\d+[.)]\s+/,'').trim().replace(/^["'`*]+|["'`*]+$/g,'').replace(/\s+/g,' ');if(blank){text=text.replace(/\s\([^)]*\)\s*$/,'').trim();if(text.length>40)text=text.replace(/\s*[-–—/]\s*.*$/,'').trim();}if(text.length>160)text=text.split(/(?<=[.!?])\s/)[0]||text.slice(0,160);text=text.replace(/[.]$/,'').trim();return /^(none|unknown|n\/a)$/i.test(text)?'':text;}
-function _echoesQuestion(answer,question){const text=(answer||'').trim();if(!/^[A-Z]{2,6}$/.test(text))return false;const initials=(question||'').match(/[A-Za-z]+/g)||[];return initials.map((word)=>word[0].toUpperCase()).join('').includes(text);}
-function _searchQuery(question){const text=(question||'').replace(/[_-]{2,}/g,' ').replace(/\b(select one|select one or more|choose\.{0,3}|true or false|answer\s*\d+\s*[.)]?\s*question\s*\d+)\b/gi,' ');const words=(text.match(/[A-Za-z0-9-]+/g)||[]).filter((word)=>!STOP_WORDS.has(word.toLowerCase()));return words.slice(0,14).join(' ').slice(0,120)||text.replace(/\s+/g,' ').trim().slice(0,120);}
-async function ollamaWebSearch(query){const clean=_searchQuery(query);if(!clean)return'';const key=normText(clean);const cached=await searchGet(key);if(cached)return cached;const result=await bgFetch('searchWeb',{query:clean,maxResults:cfg('WEB_SEARCH_MAX_RESULTS')});const text=result.text||'';if(text)await searchPut(key,text);return text;}
-// Fast DuckDuckGo snippet fallback for short answers that exist in neither the
-// local bank nor amauoed.com. The request runs in the background worker (CORS +
-// host_permissions) with a hard 4 s cap there and a 5 s guard here, so it can
-// never hang or fail askAiText(): any error/timeout just yields '' and the AI
-// stage runs exactly as it did before. Results are cached in the same
-// persistent search cache ollamaWebSearch() uses — prefixed key, so the two
-// never collide — meaning a repeated question costs no network at all.
-function _snippetKey(question){return 'snip:'+normText(question).slice(0,180);}
-async function webSnippetLookup(question){
-  const term=(question||'').replace(/\s+/g,' ').trim();
-  if(term.length<12)return'';
-  const key=_snippetKey(term);
-  try{
-    const cached=await searchGet(key);
-    if(cached)return cached;
-  }catch(error){/* a cache miss must never matter */}
-  const query=term.slice(0,WEB_Q_CHARS)+' studocu OR amauoed OR quizlet';
-  try{
-    const result=await bgFetch('SEARCH_WEB_SNIPPETS',{query,maxResults:3},5000);
-    const snippets=String((result&&result.text)||'').trim().slice(0,1500);
-    if(snippets){try{await searchPut(key,snippets);}catch(error){/* caching is optional */}}
+// ── Web search helpers ──────────────────────────────────────────────────────
+async function ollamaWebSearch(query) {
+  const clean = _searchQuery(query);
+  if (!clean) return '';
+  const key = normText(clean);
+  const cached = await searchGet(key);
+  if (cached) return cached;
+  const result = await bgFetch('searchWeb', { query: clean, maxResults: cfg('WEB_SEARCH_MAX_RESULTS') });
+  const text = result.text || '';
+  if (text) await searchPut(key, text);
+  return text;
+}
+
+function _snippetKey(question) {
+  return 'snip:' + normText(question).slice(0, 180);
+}
+
+async function webSnippetLookup(question) {
+  const term = (question || '').replace(/\s+/g, ' ').trim();
+  if (term.length < 12) return '';
+  const key = _snippetKey(term);
+  try {
+    const cached = await searchGet(key);
+    if (cached) return cached;
+  } catch (error) { /* cache miss is non-fatal */ }
+  const maxChars = Number(cfg('WEB_Q_CHARS')) || 380;
+  const query = term.slice(0, maxChars) + ' studocu OR amauoed OR quizlet';
+  try {
+    const result = await bgFetch('SEARCH_WEB_SNIPPETS', { query, maxResults: 3 }, 5000);
+    const snippets = String((result && result.text) || '').trim().slice(0, 1500);
+    if (snippets) {
+      try { await searchPut(key, snippets); } catch (error) { /* optional */ }
+    }
     return snippets;
-  }catch(error){
-    console.warn('[providers] Web snippet lookup failed:',error.message);
-    return'';
+  } catch (error) {
+    console.warn('[providers] Web snippet lookup failed:', error.message);
+    return '';
   }
 }
 
-
-function _normalizeBankHits(value,question){
-  if(value===null||value===undefined)return[];
-  let rawHits=value;
-  if(Array.isArray(value)&&value.length===2&&typeof value[0]==='number'&&Array.isArray(value[1]))rawHits=value[1];
-  else if(!Array.isArray(value))rawHits=[value];
-  const hits=[];
-  for(const rawHit of rawHits){
-    const hit=typeof rawHit==='string'?{answer:rawHit}:rawHit;
-    if(!hit||typeof hit.answer!=='string'||!hit.answer.trim())continue;
-    const normalized={question:typeof hit.question==='string'&&hit.question.trim()?hit.question:question,answer:hit.answer,course:hit.course||'imported',verified:hit.verified===true};
-    if(hit.wrong===true)normalized.wrong=true;
+// ── Local bank & answer-key lookups ─────────────────────────────────────────
+function _normalizeBankHits(value, question) {
+  if (value === null || value === undefined) return [];
+  let rawHits = value;
+  if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'number' && Array.isArray(value[1])) {
+    rawHits = value[1];
+  } else if (!Array.isArray(value)) {
+    rawHits = [value];
+  }
+  const hits = [];
+  for (const rawHit of rawHits) {
+    const hit = typeof rawHit === 'string' ? { answer: rawHit } : rawHit;
+    if (!hit || typeof hit.answer !== 'string' || !hit.answer.trim()) continue;
+    const normalized = {
+      question: typeof hit.question === 'string' && hit.question.trim() ? hit.question : question,
+      answer: hit.answer,
+      course: hit.course || 'imported',
+      verified: hit.verified === true,
+    };
+    if (hit.wrong === true) normalized.wrong = true;
     hits.push(normalized);
   }
   return hits;
 }
-// A stored hit is a "wrong hit" when it is flagged wrong or its text matches the
-// wrong-answer cache for the same question (exact or ≥0.9 similar).
-function _hitIsWrong(answer,wrong){const value=normText(answer);if(!value)return false;for(const item of wrong||[])if(value===item||similarity(value,item)>=0.9)return true;return false;}
-// Verified answers are always offered before unverified ones (stable order).
-function _rankBankHits(hits){const verified=[],rest=[];for(const hit of hits||[])(hit&&hit.verified===true?verified:rest).push(hit);return verified.concat(rest);}
-async function localBankAnswerHits(question){
-  const key=normText(question);
-  if(!key)return null;
-  const wrong=(await getWrongAnswers(question)).map((item)=>normText(item)).filter(Boolean);
-  const clean=(hits)=>{
-    const kept=(hits||[]).filter((hit)=>hit&&typeof hit.answer==='string'&&hit.answer.trim()&&hit.wrong!==true&&(hit.verified===true||!_hitIsWrong(hit.answer,wrong)));
+
+function _hitIsWrong(answer, wrong) {
+  const value = normText(answer);
+  if (!value) return false;
+  for (const item of wrong || []) if (value === item || similarity(value, item) >= 0.9) return true;
+  return false;
+}
+
+function _rankBankHits(hits) {
+  const verified = [];
+  const rest = [];
+  for (const hit of hits || []) (hit && hit.verified === true ? verified : rest).push(hit);
+  return verified.concat(rest);
+}
+
+async function localBankAnswerHits(question) {
+  const key = normText(question);
+  if (!key) return null;
+  const wrong = (await getWrongAnswers(question)).map((item) => normText(item)).filter(Boolean);
+  const clean = (hits) => {
+    const kept = (hits || []).filter((hit) =>
+      hit && typeof hit.answer === 'string' && hit.answer.trim() &&
+      hit.wrong !== true && (hit.verified === true || !_hitIsWrong(hit.answer, wrong))
+    );
     return _rankBankHits(kept);
   };
-  const direct=await answerKeyGet(key);
-  const directHits=clean(_normalizeBankHits(direct,question));
-  if(directHits.length)return directHits;
-  const all=await answerKeyGetAll();
-  let bestHits=null,bestScore=0;
-  for(const [storedKey,value] of Object.entries(all)){
-    const score=similarity(key,normText(storedKey));
-    if(score<0.80||score<=bestScore)continue;
-    const hits=clean(_normalizeBankHits(value,storedKey));
-    if(!hits.length)continue;
-    bestHits=hits;
-    bestScore=score;
-  }
-  if(bestHits)return bestHits;
-  return direct!==null?[]:null;
-}
-async function localBankOptionMatches(question,options){
-  const hits=await localBankAnswerHits(question);
-  if(!hits||!options||!options.length)return[];
-  const matches=[];
-  const used=new Set();
-  for(const hit of hits){
-    const answer=normText(hit.answer);
-    let bestIndex=-1,bestScore=0;
-    for(let i=0;i<options.length;i++){
-      if(used.has(i))continue;
-      const option=normText(options[i]);
-      const score=answer&&option?similarity(answer,option):0;
-      if(score>bestScore){bestScore=score;bestIndex=i;}
+  const direct = await answerKeyGet(key);
+  const directHits = clean(_normalizeBankHits(direct, question));
+  if (directHits.length) return directHits;
+
+  let bestHits = null;
+  if (typeof answerKeyFindFuzzy === 'function') {
+    const fuzzy = await answerKeyFindFuzzy(question, 0.80, (storedKey, value) => {
+      const hits = clean(_normalizeBankHits(value, storedKey));
+      if (!hits.length) return false;
+      bestHits = hits;
+      return true;
+    });
+    if (fuzzy && bestHits) return bestHits;
+  } else {
+    const all = await answerKeyGetAll();
+    let bestScore = 0;
+    for (const [storedKey, value] of Object.entries(all)) {
+      const score = similarity(key, normText(storedKey));
+      if (score < 0.80 || score <= bestScore) continue;
+      const hits = clean(_normalizeBankHits(value, storedKey));
+      if (!hits.length) continue;
+      bestHits = hits;
+      bestScore = score;
     }
-    if(bestIndex!==-1&&bestScore>=0.75){
+    if (bestHits) return bestHits;
+  }
+  return direct !== null ? [] : null;
+}
+
+async function localBankOptionMatches(question, options) {
+  const hits = await localBankAnswerHits(question);
+  if (!hits || !options || !options.length) return [];
+  const matches = [];
+  const used = new Set();
+  for (const hit of hits) {
+    const answer = normText(hit.answer);
+    let bestIndex = -1;
+    let bestScore = 0;
+    for (let i = 0; i < options.length; i++) {
+      if (used.has(i)) continue;
+      const option = normText(options[i]);
+      const score = answer && option ? similarity(answer, option) : 0;
+      if (score > bestScore) { bestScore = score; bestIndex = i; }
+    }
+    if (bestIndex !== -1 && bestScore >= 0.75) {
       used.add(bestIndex);
-      matches.push({index:bestIndex,option:options[bestIndex],answer:hit.answer,verified:hit.verified===true,wrong:hit.wrong===true});
+      matches.push({ index: bestIndex, option: options[bestIndex], answer: hit.answer, verified: hit.verified === true, wrong: hit.wrong === true });
     }
   }
   return _rankBankHits(matches);
 }
-async function _keyHits(question,options){
-  const key=normText(question);
-  if(!key)return[];
-  const local=await localBankAnswerHits(question);
-  if(local!==null)return local;
-  if(key.length<8||FIG_HINTS.some((hint)=>(question||'').toLowerCase().includes(hint)))return[];
-  try{
-    const result=await bgFetch('getAnswerKey',{question:(question||'').slice(0,300),options:options||[]},(cfg('ANSWER_KEY_TIMEOUT')||4)*1000+5000);
-    const hits=result.hits||[];
-    await answerKeyPut(key,hits);
+
+async function _keyHits(question, options) {
+  const key = normText(question);
+  if (!key) return [];
+  const local = await localBankAnswerHits(question);
+  if (local !== null) return local;
+  if (key.length < 8 || FIG_HINTS.some((hint) => (question || '').toLowerCase().includes(hint))) return [];
+  try {
+    const result = await bgFetch(
+      'getAnswerKey',
+      { question: (question || '').slice(0, 300), options: options || [] },
+      (cfg('ANSWER_KEY_TIMEOUT') || 4) * 1000 + 5000
+    );
+    const hits = result.hits || [];
+    await answerKeyPut(key, hits);
     return hits;
-  }catch(error){
-    console.warn('[providers] Answer-key lookup failed:',error.message);
-    if(typeof logHUD==='function')logHUD('warn','Answer-key lookup failed: '+error.message);
-    return[];
+  } catch (error) {
+    console.warn('[providers] Answer-key lookup failed:', error.message);
+    if (typeof logHUD === 'function') logHUD('warn', 'Answer-key lookup failed: ' + error.message);
+    return [];
   }
 }
-function _answerOptionScore(answer,options){const value=normText(answer);let score=0;for(const option of options||[]){const candidate=normText(option);if(candidate&&(value===candidate))score=Math.max(score,1);else if(candidate&&(value.includes(candidate)||candidate.includes(value)))score=Math.max(score,0.85);}return score;}
-function _bestKeyHit(question,hits,minScore,options){
-  const query=normText(question);
-  let best=null,bestQuestionScore=0,bestRank=-1,bestVerified=false;
-  for(const hit of hits||[]){
-    const questionScore=similarity(query,normText(hit.question));
-    const optionScore=Math.max(hit.optionScore||0,_answerOptionScore(hit.answer,options));
-    const qualifies=questionScore>=minScore||(options&&optionScore>=0.95&&questionScore>=minScore*0.65);
-    if(!qualifies)continue;
-    const rank=questionScore+optionScore*0.15;
-    const verified=hit.verified===true;
-    // verified: true always outranks an unverified hit; ties use the closest match.
-    const better=verified===bestVerified?rank>bestRank:verified;
-    if(better){best=hit;bestQuestionScore=questionScore;bestRank=rank;bestVerified=verified;}
+
+function _answerOptionScore(answer, options) {
+  const value = normText(answer);
+  let score = 0;
+  for (const option of options || []) {
+    const candidate = normText(option);
+    if (candidate && value === candidate) score = Math.max(score, 1);
+    else if (candidate && (value.includes(candidate) || candidate.includes(value))) score = Math.max(score, 0.85);
   }
-  return best&&bestQuestionScore>=minScore?best:best&&options&&_answerOptionScore(best.answer,options)>=0.95?best:null;
+  return score;
 }
-function _pickKeyAnswer(answer,options){const value=normText(answer);if(!value)return-1;if(BOOL_TRUE.has(value)||BOOL_FALSE.has(value)){const index=_boolIndex(options,BOOL_TRUE.has(value));if(index!==-1)return index;}let best=-1,score=0;for(let i=0;i<options.length;i++){const candidate=similarity(value,normText(options[i]));if(candidate>score){best=i;score=candidate;}}return score>=0.6?best:-1;}
-async function keyIndex(question,options,minScore){const hits=(await _keyHits(question,options)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,minScore===undefined?cfg('ANSWER_KEY_MIN_SCORE'):minScore,options);if(!hit)return-1;const answer=normText(hit.answer);const wrong=await getWrongAnswers(question);if(wrong.some((item)=>answer===normText(item)||similarity(answer,normText(item))>=0.9))return-1;return _pickKeyAnswer(hit.answer,options);}
-async function keyAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_TEXT_MIN_SCORE'));if(!hit)return'';const answer=_cleanTyped(hit.answer);const wrong=await getWrongAnswers(question);return wrong.some((item)=>normText(item)===normText(answer)||similarity(normText(item),normText(answer))>=0.9)?'':answer;}
-async function keyMatchAnswer(question){const hits=(await _keyHits(question)).filter((hit)=>hit&&hit.verified===true);const hit=_bestKeyHit(question,hits,cfg('ANSWER_KEY_MATCH_MIN_SCORE'));return hit?_cleanTyped(hit.answer):'';}
-async function hintText(question){const hits=await _keyHits(question);if(!_bestKeyHit(question,hits,0.35))return'';const lines=hits.slice(0,3).map((hit)=>'- '+(hit.question||'').slice(0,200)+'\n  KEY: '+(hit.answer||''));return'REFERENCE KEYS from amauoed.com (user-submitted, may be wrong — prefer them only if they fit the question):\n'+lines.join('\n');}
-function _interpretAnswer(raw,options,excluded){if(!raw)return-1;const t=raw.trim(),n=options.length,e=new Set(excluded||[]),el=[];for(let i=0;i<n;i++)if(!e.has(i))el.push(i);const ue=el.length?el:[...Array(n).keys()];const m=t.match(/\b(\d{1,2})\b/);if(m){const i=parseInt(m[1],10)-1;if(i>=0&&i<n&&ue.includes(i))return i;}let lm=t.match(/^\s*[\(\[\{]?\s*([A-Za-z])\s*[\)\]\.:\-]/);if(!lm)lm=t.match(/^\s*([A-Za-z])\s*$/);if(lm){const i=lm[1].toUpperCase().charCodeAt(0)-65;if(i>=0&&i<n&&ue.includes(i))return i;}const lw=t.toLowerCase();let b=-1,s=0;for(let i=0;i<n;i++){if(e.has(i))continue;const o=options[i].toLowerCase().trim();if(!o)continue;if(o===lw)return i;let sc=similarity(lw,o);if(o.includes(lw)||lw.includes(o))sc=Math.max(sc,0.85);if(sc>s){b=i;s=sc;}}return s>=0.6?b:-1;}async function askBoolClaim(q,o,ex){const p='Decide whether the statement below is TRUE or FALSE.\nJudge it on the standard definition.\n\nStatement: '+q+'\n\nReply with ONLY TRUE or FALSE.';if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const r=await postOpenRouter([{role:'user',content:p}],{maxTokens:64,temperature:0.1,timeout:25});if(r){const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();const v=_readBool(ra);if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}try{const r=await postOllama(p,{numPredict:16,temperature:0.1,timeout:30});if(r&&r.response){const v=_readBool(r.response.trim());if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}catch(e){}return-1;}
-async function _askGeminiPrompt(prompt,opts={}){const response=await postGemini([{role:'user',content:prompt}],opts);return response&&response.choices?.[0]?.message?.content||'';}
-async function askGemini(q,o,ex,oi){if(!cfg('GEMINI_API_KEY'))return-1;const options=o.map((option,i)=>`${i+1}. ${option}`).join('\n');const prompt='You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: '+q+'\n\nOptions:\n'+options+'\n\nReply with ONLY the number.';const raw=await _askGeminiPrompt(prompt,{maxTokens:64,temperature:0.2,timeout:30});return oi?_interpretFilteredAnswer(raw,o,oi):_interpretAnswer(raw,o,ex);}
-async function askGeminiVision(q,o,images){if(!cfg('GEMINI_API_KEY')||!images.length)return-1;const content=[{type:'text',text:_visionPrompt(q,o)},...images.map((image)=>({type:'image_url',image_url:{url:'data:image/png;base64,'+image}}))];const response=await postGemini([{role:'user',content}],{maxTokens:64,temperature:0.1,timeout:45});const raw=response?.choices?.[0]?.message?.content||'';return _interpretAnswer(raw,o,_wrongOptionIndices(o,await getWrongAnswers(q)));}
-async function askGeminiMulti(q,o,excluded,note){if(!cfg('GEMINI_API_KEY'))return[];const forbidden=(excluded||[]).map((index)=>o[index]).filter(Boolean);const raw=await _askGeminiPrompt(_multiPrompt(q,o,note,forbidden),{maxTokens:64,temperature:0.2,timeout:30});return _interpretMulti(raw,o,excluded);}
-async function askGeminiText(q,blank,forbidden,temperature,variant,note,force,courseContext){if(!cfg('GEMINI_API_KEY'))return'';const raw=await _askGeminiPrompt(_textPrompt(q,forbidden,variant,note,force,courseContext),{maxTokens:80,temperature:temperature??0.1,timeout:30,quiet:true});return _cleanTyped(raw,blank);}
-async function askBoolClaim(q,o,ex){const p='Decide whether the statement below is TRUE or FALSE.\nJudge it on the standard definition.\n\nStatement: '+q+'\n\nReply with ONLY TRUE or FALSE.';if(cfg('GEMINI_API_KEY')){const raw=await _askGeminiPrompt(p,{maxTokens:32,temperature:0.1,timeout:30});const verdict=_readBool(raw);if(verdict!==null){const index=_boolIndex(o,verdict);const excluded=new Set(ex||[]);if(index!==-1&&(excluded.size>=o.length||!excluded.has(index)))return index;}}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const r=await postOpenRouter([{role:'user',content:p}],{maxTokens:64,temperature:0.1,timeout:25});if(r){const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();const v=_readBool(ra);if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}try{const r=await postOllama(p,{numPredict:16,temperature:0.1,timeout:30});if(r&&r.response){const v=_readBool(r.response.trim());if(v!==null){const i=_boolIndex(o,v);const ee=new Set(ex||[]);if(i!==-1&&(ee.size>=o.length||!ee.has(i)))return i;}}}catch(e){}return-1;}
-async function askOpenRouter(q,o,ex,oi){if(!cfg('OPENROUTER_API_KEY')||orCooling())return-1;const ot=o.map((x,i)=>`${i+1}. ${x}`).join('\n');const p='You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY the number.';try{const r=await postOpenRouter([{role:'user',content:p}],{maxTokens:64,temperature:0.3,timeout:25});if(!r)return-1;const m=r.choices?.[0]?.message||{};const t=((m.content||m.reasoning||'')).trim();const idx=oi?_interpretFilteredAnswer(t,o,oi):_interpretAnswer(t,o,ex);if(idx!==-1)return idx;return-1;}catch(e){return-1;}}
-async function askOpenRouterWeb(q,o,oi){if(!cfg('OPENROUTER_API_KEY')||_orWebDisabled||orCooling())return-1;const options=o.map((option,index)=>`${index+1}. ${option}`).join('\n');const prompt='Use web search results to answer this exam question.\n\nQuestion: '+q.slice(0,WEB_Q_CHARS)+'\n\nOptions:\n'+options+'\n\nReply with ONLY the option number.';const response=await postOpenRouter([{role:'user',content:prompt}],{plugins:[{id:'web',engine:'exa',max_results:cfg('WEB_SEARCH_MAX_RESULTS'),search_prompt:'Exact question and answer.'}],maxTokens:100,temperature:0.1,timeout:45});if(!response)return-1;const message=response.choices?.[0]?.message||{};const first=((message.content||message.reasoning||'').trim().split('\n')[0]||'');return oi?_interpretFilteredAnswer(first,o,oi):_interpretAnswer(first,o);}
-async function askOllama(q,o,ex,oi){const ot=o.map((x,i)=>`${i+1}. ${x}`).join('\n');const p='You are an expert tutor answering an exam question accurately.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY the number.';try{const r=await postOllama(p,{numPredict:32,temperature:0.1,timeout:60});if(r&&r.response){const t=r.response.trim();const idx=oi?_interpretFilteredAnswer(t,o,oi):_interpretAnswer(t,o,ex);if(idx!==-1)return idx;}return-1;}catch(e){return-1;}}
-async function askCustomApi(q,o,ex,oi){if(!cfg('CUSTOM_API_KEY')||customCooling())return-1;const ot=o.map((x,i)=>`${i+1}. ${x}`).join('\n');const p='You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY the number.';try{const r=await postCustomApi([{role:'user',content:p}],{maxTokens:64,temperature:0.1,timeout:25});if(!r)return-1;const m=r.choices?.[0]?.message||{};const t=((m.content||m.reasoning||'')).trim();const idx=oi?_interpretFilteredAnswer(t,o,oi):_interpretAnswer(t,o,ex);if(idx!==-1)return idx;return-1;}catch(e){return-1;}}
-function _visionPrompt(q,o){const ot=o.map((x,i)=>`${i+1}. ${x}`).join('\n');return'You are an expert tutor. The question refers to image(s).\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY the number.';}
-async function askOpenRouterVision(q,o,im){if(!(cfg('OPENROUTER_API_KEY')&&im.length)||orCooling())return-1;const m=cfg('OPENROUTER_VISION_MODEL').trim()||cfg('OPENROUTER_MODEL');const c=[{type:'text',text:_visionPrompt(q,o)}];for(const b64 of im)c.push({type:'image_url',image_url:{url:'data:image/png;base64,'+b64}});try{const r=await postOpenRouter([{role:'user',content:c}],{model:m,maxTokens:64,temperature:0.1,timeout:45});if(!r)return-1;const msg=r.choices?.[0]?.message||{};const raw=((msg.content||msg.reasoning||'')).trim();const w=await getWrongAnswers(q);const ex=_wrongOptionIndices(o,w);return _interpretAnswer(raw,o,ex);}catch(e){return-1;}}
 
+function _bestKeyHit(question, hits, minScore, options) {
+  const query = normText(question);
+  let best = null;
+  let bestQuestionScore = 0;
+  let bestRank = -1;
+  let bestVerified = false;
+  for (const hit of hits || []) {
+    const questionScore = similarity(query, normText(hit.question));
+    const optionScore = Math.max(hit.optionScore || 0, _answerOptionScore(hit.answer, options));
+    const qualifies = questionScore >= minScore || (options && optionScore >= 0.95 && questionScore >= minScore * 0.65);
+    if (!qualifies) continue;
+    const rank = questionScore + optionScore * 0.15;
+    const verified = hit.verified === true;
+    const better = verified === bestVerified ? rank > bestRank : verified;
+    if (better) { best = hit; bestQuestionScore = questionScore; bestRank = rank; bestVerified = verified; }
+  }
+  return best && bestQuestionScore >= minScore
+    ? best
+    : best && options && _answerOptionScore(best.answer, options) >= 0.95 ? best : null;
+}
 
+function _pickKeyAnswer(answer, options) {
+  const value = normText(answer);
+  if (!value) return -1;
+  if (BOOL_TRUE.has(value) || BOOL_FALSE.has(value)) {
+    const index = _boolIndex(options, BOOL_TRUE.has(value));
+    if (index !== -1) return index;
+  }
+  let best = -1;
+  let score = 0;
+  for (let i = 0; i < options.length; i++) {
+    const candidate = similarity(value, normText(options[i]));
+    if (candidate > score) { best = i; score = candidate; }
+  }
+  return score >= 0.6 ? best : -1;
+}
 
-async function askOllamaVision(q,o,im){if(!im.length)return -1;try{const r=await postOllama(_visionPrompt(q,o),{model:cfg('OLLAMA_VISION_MODEL')||cfg('OLLAMA_MODEL'),numPredict:40,temperature:0.1,images:im,timeout:45});if(r&&r.response){const raw=r.response.trim();const w=await getWrongAnswers(q);const ex=_wrongOptionIndices(o,w);return _interpretAnswer(raw,o,ex);}return -1;}catch(e){return -1;}}
-async function askVision(q,o,im){if(!(cfg('VISION_ENABLED')&&im.length))return -1;console.log('Vision');if(cfg('GEMINI_API_KEY')){const i=await askGeminiVision(q,o,im);if(i!==-1)return i;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const i=await askOpenRouterVision(q,o,im);if(i!==-1)return i;}const i=await askOllamaVision(q,o,im);if(i!==-1)return i;return -1;}
-function _multiPrompt(q,o,n,f){const ot=o.map((x,i)=>(i+1)+'. '+x).join('\n');let p='';if(f&&f.length)p+='Do NOT pick these, already wrong: '+[...f].sort().join(', ')+'\n\n';if(n)p+=n+'\n\n';return p+'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: '+q+'\n\nOptions:\n'+ot+'\n\nReply with ONLY numbers separated by commas.';}
-function _parsePartialMultiSelectCombo(value){
-  const raw=String(value||'').trim();
-  if(/\s*\|\|\s*/.test(raw))return raw.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort();
-  const marker=normText(value);
-  const prefix='multiselect partial combo ';
-  if(!marker.startsWith(prefix))return null;
-  let rest=marker.slice(prefix.length),choices=[];
-  while(rest){
-    const lengthMatch=rest.match(/^(\d+)\s/);
-    if(!lengthMatch)return null;
-    const length=Number(lengthMatch[1]),start=lengthMatch[0].length;
-    if(!Number.isSafeInteger(length)||length<1||start+length>rest.length)return null;
-    choices.push(rest.slice(start,start+length));
-    rest=rest.slice(start+length).trim();
+async function keyIndex(question, options, minScore) {
+  const hits = (await _keyHits(question, options)).filter((hit) => hit && hit.verified === true);
+  const hit = _bestKeyHit(question, hits, minScore === undefined ? cfg('ANSWER_KEY_MIN_SCORE') : minScore, options);
+  if (!hit) return -1;
+  const answer = normText(hit.answer);
+  const wrong = await getWrongAnswers(question);
+  if (wrong.some((item) => answer === normText(item) || similarity(answer, normText(item)) >= 0.9)) return -1;
+  return _pickKeyAnswer(hit.answer, options);
+}
+
+async function keyAnswer(question) {
+  const hits = (await _keyHits(question)).filter((hit) => hit && hit.verified === true);
+  const hit = _bestKeyHit(question, hits, cfg('ANSWER_KEY_TEXT_MIN_SCORE'));
+  if (!hit) return '';
+  const answer = _cleanTyped(hit.answer);
+  const wrong = await getWrongAnswers(question);
+  return wrong.some((item) => normText(item) === normText(answer) || similarity(normText(item), normText(answer)) >= 0.9) ? '' : answer;
+}
+
+async function keyMatchAnswer(question) {
+  const hits = (await _keyHits(question)).filter((hit) => hit && hit.verified === true);
+  const hit = _bestKeyHit(question, hits, cfg('ANSWER_KEY_MATCH_MIN_SCORE'));
+  return hit ? _cleanTyped(hit.answer) : '';
+}
+
+async function hintText(question) {
+  const hits = await _keyHits(question);
+  if (!_bestKeyHit(question, hits, 0.35)) return '';
+  const lines = hits.slice(0, 3).map((hit) => '- ' + (hit.question || '').slice(0, 200) + '\n  KEY: ' + (hit.answer || ''));
+  return 'REFERENCE KEYS from amauoed.com (user-submitted, may be wrong — prefer them only if they fit the question):\n' + lines.join('\n');
+}
+
+// ── Single-choice, Boolean & Vision AI callers ──────────────────────────────
+async function _askGeminiPrompt(prompt, opts = {}) {
+  const response = await postGemini([{ role: 'user', content: prompt }], opts);
+  return (response && response.choices?.[0]?.message?.content) || '';
+}
+
+function _imageToDataUrl(image) {
+  if (!image) return '';
+  if (typeof image === 'string') {
+    return image.startsWith('data:') ? image : 'data:image/png;base64,' + image;
+  }
+  if (typeof image === 'object' && image.base64) {
+    return `data:${image.mimeType || 'image/png'};base64,${image.base64}`;
+  }
+  return '';
+}
+
+async function askGemini(q, o, ex, oi) {
+  if (!cfg('GEMINI_API_KEY')) return -1;
+  const options = o.map((option, i) => `${i + 1}. ${option}`).join('\n');
+  const prompt = 'You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: ' + q + '\n\nOptions:\n' + options + '\n\nReply with ONLY the number.';
+  const raw = await _askGeminiPrompt(prompt, { maxTokens: 64, temperature: 0.2, timeout: 30 });
+  return oi ? _interpretFilteredAnswer(raw, o, oi) : _interpretAnswer(raw, o, ex);
+}
+
+async function askGeminiVision(q, o, images) {
+  if (!cfg('GEMINI_API_KEY') || !images.length) return -1;
+  const content = [
+    { type: 'text', text: _visionPrompt(q, o) },
+    ...images.map(_imageToDataUrl).filter(Boolean).map((url) => ({ type: 'image_url', image_url: { url } })),
+  ];
+  const response = await postGemini([{ role: 'user', content }], { maxTokens: 64, temperature: 0.1, timeout: 45 });
+  const raw = response?.choices?.[0]?.message?.content || '';
+  return _interpretAnswer(raw, o, _wrongOptionIndices(o, await getWrongAnswers(q)));
+}
+
+async function askGeminiMulti(q, o, excluded, note) {
+  if (!cfg('GEMINI_API_KEY')) return [];
+  const forbidden = (excluded || []).map((index) => o[index]).filter(Boolean);
+  const raw = await _askGeminiPrompt(_multiPrompt(q, o, note, forbidden), { maxTokens: 64, temperature: 0.2, timeout: 30 });
+  return _interpretMulti(raw, o, excluded);
+}
+
+async function askGeminiText(q, blank, forbidden, temperature, variant, note, force, courseContext) {
+  if (!cfg('GEMINI_API_KEY')) return '';
+  const raw = await _askGeminiPrompt(_textPrompt(q, forbidden, variant, note, force, courseContext), { maxTokens: 80, temperature: temperature ?? 0.1, timeout: 30, quiet: true });
+  return _cleanTyped(raw, blank);
+}
+
+async function askBoolClaim(q, o, ex) {
+  const prompt = 'Decide whether the statement below is TRUE or FALSE.\nJudge it on the standard definition.\n\nStatement: ' + q + '\n\nReply with ONLY TRUE or FALSE.';
+  const excluded = new Set(ex || []);
+  const pick = (raw) => {
+    const verdict = _readBool(raw);
+    if (verdict === null) return -1;
+    const index = _boolIndex(o, verdict);
+    return index !== -1 && (excluded.size >= o.length || !excluded.has(index)) ? index : -1;
+  };
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    const r = await postCustomApi([{ role: 'user', content: prompt }], { maxTokens: 32, temperature: 0.1, timeout: 25 });
+    const m = r?.choices?.[0]?.message || {};
+    const idx = pick((m.content || m.reasoning || '').trim());
+    if (idx !== -1) return idx;
+  }
+  if (cfg('GEMINI_API_KEY')) {
+    const idx = pick(await _askGeminiPrompt(prompt, { maxTokens: 32, temperature: 0.1, timeout: 30 }));
+    if (idx !== -1) return idx;
+  }
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    const r = await postOpenRouter([{ role: 'user', content: prompt }], { maxTokens: 64, temperature: 0.1, timeout: 25 });
+    const m = r?.choices?.[0]?.message || {};
+    const idx = pick((m.content || m.reasoning || '').trim());
+    if (idx !== -1) return idx;
+  }
+  try {
+    const r = await postOllama(prompt, { numPredict: 16, temperature: 0.1, timeout: 30 });
+    const idx = pick(r && r.response ? r.response.trim() : '');
+    if (idx !== -1) return idx;
+  } catch (e) { /* ollama offline */ }
+  return -1;
+}
+
+async function askOpenRouter(q, o, ex, oi) {
+  if (!cfg('OPENROUTER_API_KEY') || orCooling()) return -1;
+  const ot = o.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  const p = 'You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: ' + q + '\n\nOptions:\n' + ot + '\n\nReply with ONLY the number.';
+  try {
+    const r = await postOpenRouter([{ role: 'user', content: p }], { maxTokens: 64, temperature: 0.3, timeout: 25 });
+    if (!r) return -1;
+    const m = r.choices?.[0]?.message || {};
+    const t = ((m.content || m.reasoning || '')).trim();
+    return oi ? _interpretFilteredAnswer(t, o, oi) : _interpretAnswer(t, o, ex);
+  } catch (e) {
+    return -1;
+  }
+}
+
+async function askOpenRouterWeb(q, o, oi) {
+  if (!cfg('OPENROUTER_WEB_ENABLED') || !cfg('OPENROUTER_API_KEY') || _orWebDisabled || orCooling()) return -1;
+  const webChars = Number(cfg('WEB_Q_CHARS')) || 380;
+  const options = o.map((option, index) => `${index + 1}. ${option}`).join('\n');
+  const prompt = 'Use web search results to answer this exam question.\n\nQuestion: ' + q.slice(0, webChars) + '\n\nOptions:\n' + options + '\n\nReply with ONLY the option number.';
+  const response = await postOpenRouter([{ role: 'user', content: prompt }], {
+    plugins: [{ id: 'web', engine: 'exa', max_results: cfg('WEB_SEARCH_MAX_RESULTS'), search_prompt: 'Exact question and answer.' }],
+    maxTokens: 100,
+    temperature: 0.1,
+    timeout: 45,
+  });
+  if (!response) return -1;
+  const message = response.choices?.[0]?.message || {};
+  const first = ((message.content || message.reasoning || '').trim().split('\n')[0] || '');
+  return oi ? _interpretFilteredAnswer(first, o, oi) : _interpretAnswer(first, o);
+}
+
+async function askOllama(q, o, ex, oi) {
+  const ot = o.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  const p = 'You are an expert tutor answering an exam question accurately.\n\nQuestion: ' + q + '\n\nOptions:\n' + ot + '\n\nReply with ONLY the number.';
+  try {
+    const r = await postOllama(p, { numPredict: 32, temperature: 0.1, timeout: 60 });
+    if (r && r.response) {
+      const t = r.response.trim();
+      return oi ? _interpretFilteredAnswer(t, o, oi) : _interpretAnswer(t, o, ex);
+    }
+    return -1;
+  } catch (e) {
+    return -1;
+  }
+}
+
+async function askCustomApi(q, o, ex, oi) {
+  if (!cfg('CUSTOM_API_KEY') || customCooling()) return -1;
+  const ot = o.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  const p = 'You are an expert tutor answering an exam question. Select the BEST answer.\n\nQuestion: ' + q + '\n\nOptions:\n' + ot + '\n\nReply with ONLY the number.';
+  try {
+    const r = await postCustomApi([{ role: 'user', content: p }], { maxTokens: 64, temperature: 0.1, timeout: 25 });
+    if (!r) return -1;
+    const m = r.choices?.[0]?.message || {};
+    const t = ((m.content || m.reasoning || '')).trim();
+    return oi ? _interpretFilteredAnswer(t, o, oi) : _interpretAnswer(t, o, ex);
+  } catch (e) {
+    return -1;
+  }
+}
+
+function _visionPrompt(q, o) {
+  const ot = o.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  return 'You are an expert tutor. The question refers to image(s).\n\nQuestion: ' + q + '\n\nOptions:\n' + ot + '\n\nReply with ONLY the number.';
+}
+
+async function askOpenRouterVision(q, o, im) {
+  if (!(cfg('OPENROUTER_API_KEY') && im.length) || orCooling()) return -1;
+  const m = String(cfg('OPENROUTER_VISION_MODEL') || '').trim() || cfg('OPENROUTER_MODEL');
+  const c = [
+    { type: 'text', text: _visionPrompt(q, o) },
+    ...im.map(_imageToDataUrl).filter(Boolean).map((url) => ({ type: 'image_url', image_url: { url } })),
+  ];
+  try {
+    const r = await postOpenRouter([{ role: 'user', content: c }], { model: m, maxTokens: 64, temperature: 0.1, timeout: 45 });
+    if (!r) return -1;
+    const msg = r.choices?.[0]?.message || {};
+    const raw = ((msg.content || msg.reasoning || '')).trim();
+    const w = await getWrongAnswers(q);
+    return _interpretAnswer(raw, o, _wrongOptionIndices(o, w));
+  } catch (e) {
+    return -1;
+  }
+}
+
+async function askOllamaVision(q, o, im) {
+  if (!im.length) return -1;
+  try {
+    const r = await postOllama(_visionPrompt(q, o), {
+      model: cfg('OLLAMA_VISION_MODEL') || cfg('OLLAMA_MODEL'),
+      numPredict: 40,
+      temperature: 0.1,
+      images: im,
+      timeout: 45,
+    });
+    if (r && r.response) {
+      const w = await getWrongAnswers(q);
+      return _interpretAnswer(r.response.trim(), o, _wrongOptionIndices(o, w));
+    }
+    return -1;
+  } catch (e) {
+    return -1;
+  }
+}
+
+async function askVision(q, o, im) {
+  if (!(cfg('VISION_ENABLED') && im && im.length)) return -1;
+  if (typeof logHUD === 'function') logHUD('info', `Vision lookup (${im.length} image${im.length === 1 ? '' : 's'})...`);
+  if (cfg('GEMINI_API_KEY')) {
+    const i = await askGeminiVision(q, o, im);
+    if (i !== -1) return i;
+  }
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    const i = await askOpenRouterVision(q, o, im);
+    if (i !== -1) return i;
+  }
+  const i = await askOllamaVision(q, o, im);
+  if (i !== -1) return i;
+  return -1;
+}
+
+// ── Multi-answer ────────────────────────────────────────────────────────────
+function _multiPrompt(q, o, n, f) {
+  const ot = o.map((x, i) => (i + 1) + '. ' + x).join('\n');
+  let p = '';
+  if (f && f.length) p += 'Do NOT pick these, already wrong: ' + [...f].sort().join(', ') + '\n\n';
+  if (n) p += n + '\n\n';
+  return p + 'You are an expert tutor answering a multiple-answer question. MORE THAN ONE is correct.\n\nQuestion: ' + q + '\n\nOptions:\n' + ot + '\n\nReply with ONLY numbers separated by commas.';
+}
+
+function _parsePartialMultiSelectCombo(value) {
+  const raw = String(value || '').trim();
+  if (/\s*\|\|\s*/.test(raw)) return raw.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort();
+  const marker = normText(value);
+  const prefix = 'multiselect partial combo ';
+  if (!marker.startsWith(prefix)) return null;
+  let rest = marker.slice(prefix.length);
+  const choices = [];
+  while (rest) {
+    const lengthMatch = rest.match(/^(\d+)\s/);
+    if (!lengthMatch) return null;
+    const length = Number(lengthMatch[1]);
+    const start = lengthMatch[0].length;
+    if (!Number.isSafeInteger(length) || length < 1 || start + length > rest.length) return null;
+    choices.push(rest.slice(start, start + length));
+    rest = rest.slice(start + length).trim();
   }
   return choices.sort();
 }
-function _parseMultiSelectResponse(raw,options,wrongOptions,partialCombos){
-  const text=String(raw||'');
-  const start=text.indexOf('['),end=text.lastIndexOf(']');
-  if(start<0||end<start)return[];
+
+function _parseMultiSelectResponse(raw, options, wrongOptions, partialCombos) {
+  const text = String(raw || '');
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start < 0 || end < start) return [];
   let parsed;
-  try{parsed=JSON.parse(text.slice(start,end+1));}catch(error){return[];}
-  if(!Array.isArray(parsed))return[];
-  const wrong=(wrongOptions||[]).map((value)=>normText(value)).filter(Boolean);
-  const indexes=[];
-  for(const value of parsed){
-    if(typeof value!=='string')continue;
-    const answer=normText(value);
-    if(!answer||wrong.some((item)=>item===answer||similarity(item,answer)>=0.9))continue;
-    const index=options.findIndex((option)=>normText(option)===answer);
-    if(index!==-1&&!indexes.includes(index))indexes.push(index);
+  try { parsed = JSON.parse(text.slice(start, end + 1)); } catch (error) { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const wrong = (wrongOptions || []).map((value) => normText(value)).filter(Boolean);
+  const indexes = [];
+  for (const value of parsed) {
+    if (typeof value !== 'string') continue;
+    const answer = normText(value);
+    if (!answer || wrong.some((item) => item === answer || similarity(item, answer) >= 0.9)) continue;
+    const index = options.findIndex((option) => normText(option) === answer);
+    if (index !== -1 && !indexes.includes(index)) indexes.push(index);
   }
-  const selection=indexes.map((index)=>normText(options[index])).sort();
-  if((partialCombos||[]).some((combo)=>combo.length===selection.length&&combo.every((choice,index)=>choice===selection[index])))return[];
-  return indexes;
+  const selection = indexes.map((index) => normText(options[index])).sort();
+  if ((partialCombos || []).some((combo) => combo.length === selection.length && combo.every((choice, index) => choice === selection[index]))) {
+    return [];
+  }
+  const cap = Number(cfg('MULTI_MAX_PICKS')) || 0;
+  return cap > 0 && indexes.length > cap ? indexes.slice(0, cap) : indexes;
 }
-async function askAiMultiSelect(question,options,wrongList){
-  const wrong=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(question);
-  const partial=wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
-  const wrongOptions=wrong.filter((value)=>!normText(value).startsWith('multiselect partial '));
-  const prompt="This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: "+question+"\n\nOptions:\n"+options.map((option)=>'- '+option).join('\n');
-  const context=[];
-  if(wrong.length){
-    const formatted=wrong.map((value)=>{
-      const combo=_parsePartialMultiSelectCombo(value);
-      return combo?combo.join(' || '):value;
+
+async function askAiMultiSelect(question, options, wrongList) {
+  const wrong = Array.isArray(wrongList) ? wrongList : await answerKeyGetWrong(question);
+  const partial = wrong.map(_parsePartialMultiSelectCombo).filter(Boolean);
+  const wrongOptions = wrong.filter((value) => !normText(value).startsWith('multiselect partial '));
+  const prompt = "This is a multiple-answer checkbox question ('Select one or more'). Carefully evaluate EVERY option and return ONLY a JSON array containing ALL correct option strings verbatim (typically 2 to 4 options).\n\nQuestion: " + question + "\n\nOptions:\n" + options.map((option) => '- ' + option).join('\n');
+  const context = [];
+  if (wrong.length) {
+    const formatted = wrong.map((value) => {
+      const combo = _parsePartialMultiSelectCombo(value);
+      return combo ? combo.join(' || ') : value;
     });
-    context.push('Do NOT return these previously failed/partial combinations: '+formatted.join('; ')+'.');
+    context.push('Do NOT return these previously failed/partial combinations: ' + formatted.join('; ') + '.');
   }
-  if(partial.length)context.push('Previously recorded partial selections (do not repeat an exact combination): '+partial.map((combo)=>'['+combo.join(', ')+']').join('; ')+'.');
-  if(wrongOptions.length)context.push('Options already confirmed wrong: '+wrongOptions.join(', ')+'.');
-  const requestPrompt=context.length?prompt+'\n\n'+context.join('\n'):prompt;
-  const parse=(raw)=>_parseMultiSelectResponse(raw,options,wrongOptions,partial);
-  if(cfg('CUSTOM_API_KEY')&&!customCooling()){
-    try{
-      const response=await postCustomApi([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
-      const raw=response&&response.choices&&response.choices[0]&&response.choices[0].message
-        ?response.choices[0].message.content||response.choices[0].message.reasoning||'':'';
-      const picks=parse(raw);if(picks.length)return picks;
-    }catch(error){_recordProviderFailure('FreeLLMAPI',error.status,error.message);}
+  if (partial.length) context.push('Previously recorded partial selections (do not repeat an exact combination): ' + partial.map((combo) => '[' + combo.join(', ') + ']').join('; ') + '.');
+  if (wrongOptions.length) context.push('Options already confirmed wrong: ' + wrongOptions.join(', ') + '.');
+  const requestPrompt = context.length ? prompt + '\n\n' + context.join('\n') : prompt;
+  const parse = (raw) => _parseMultiSelectResponse(raw, options, wrongOptions, partial);
+
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    try {
+      const response = await postCustomApi([{ role: 'user', content: requestPrompt }], { maxTokens: 220, temperature: 0.1, timeout: 30 });
+      const raw = response?.choices?.[0]?.message ? (response.choices[0].message.content || response.choices[0].message.reasoning || '') : '';
+      const picks = parse(raw);
+      if (picks.length) return picks;
+    } catch (error) { _recordProviderFailure('FreeLLMAPI', error.status, error.message); }
   }
-  if(cfg('GEMINI_API_KEY')){
-    try{const picks=parse(await _askGeminiPrompt(requestPrompt,{maxTokens:220,temperature:0.1,timeout:30}));if(picks.length)return picks;}
-    catch(error){_recordProviderFailure('Gemini',error.status,error.message);}
+  if (cfg('GEMINI_API_KEY')) {
+    try {
+      const picks = parse(await _askGeminiPrompt(requestPrompt, { maxTokens: 220, temperature: 0.1, timeout: 30 }));
+      if (picks.length) return picks;
+    } catch (error) { _recordProviderFailure('Gemini', error.status, error.message); }
   }
-  if(cfg('OPENROUTER_API_KEY')&&!orCooling()){
-    try{
-      const response=await postOpenRouter([{role:'user',content:requestPrompt}],{maxTokens:220,temperature:0.1,timeout:30});
-      const message=response&&response.choices&&response.choices[0]&&response.choices[0].message||{};
-      const picks=parse(message.content||message.reasoning||'');if(picks.length)return picks;
-    }catch(error){_recordProviderFailure('OpenRouter',error.status,error.message);}
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    try {
+      const response = await postOpenRouter([{ role: 'user', content: requestPrompt }], { maxTokens: 220, temperature: 0.1, timeout: 30 });
+      const message = response?.choices?.[0]?.message || {};
+      const picks = parse(message.content || message.reasoning || '');
+      if (picks.length) return picks;
+    } catch (error) { _recordProviderFailure('OpenRouter', error.status, error.message); }
   }
-  try{
-    const response=await postOllama(requestPrompt,{numPredict:220,temperature:0.1,timeout:45});
-    const picks=parse(response&&response.response||'');if(picks.length)return picks;
-  }catch(error){_recordProviderFailure('Ollama',error.status,error.message);}
-  return[];
+  try {
+    const response = await postOllama(requestPrompt, { numPredict: 220, temperature: 0.1, timeout: 45 });
+    const picks = parse((response && response.response) || '');
+    if (picks.length) return picks;
+  } catch (error) { _recordProviderFailure('Ollama', error.status, error.message); }
+  return [];
 }
-async function askOpenRouterMulti(q,o,ex,n){if(!cfg('OPENROUTER_API_KEY')||orCooling())return[];const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOpenRouter([{role:'user',content:_multiPrompt(q,o,n,f)}],{maxTokens:64,temperature:0.2,timeout:25});if(!r)return[];const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}catch(e){return[];}}
-async function askOpenRouterWebMulti(q,o,ex){if(!cfg('OPENROUTER_API_KEY')||_orWebDisabled||orCooling())return[];const excluded=(ex||[]).map((index)=>o[index]).filter(Boolean);const prompt=_multiPrompt(q,o,'Use web search results to select the correct options.',excluded);const response=await postOpenRouter([{role:'user',content:prompt}],{plugins:[{id:'web',engine:'exa',max_results:cfg('WEB_SEARCH_MAX_RESULTS'),search_prompt:'Exact question and answers.'}],maxTokens:100,temperature:0.1,timeout:45});if(!response)return[];const message=response.choices?.[0]?.message||{};const first=((message.content||message.reasoning||'').trim().split('\n')[0]||'');return _interpretMulti(first,o,ex);}
-async function askOllamaMulti(q,o,ex,n){const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postOllama(_multiPrompt(q,o,n,f),{numPredict:48,temperature:0.1,timeout:45});if(r&&r.response){const ra=r.response.trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}return[];}catch(e){return[];}}
-async function askCustomApiMulti(q,o,ex,n){if(!cfg('CUSTOM_API_KEY')||customCooling())return[];const f=(ex||[]).map(i=>o[i]).filter(Boolean);try{const r=await postCustomApi([{role:'user',content:_multiPrompt(q,o,n,f)}],{maxTokens:64,temperature:0.2,timeout:25});if(!r)return[];const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();let p=_interpretMulti(ra,o,ex);if(!p.length)p=_interpretMulti(ra,o);return p;}catch(e){return[];}}
-async function askWebMulti(q,o,ex){
-  if(!cfg('WEB_SEARCH_ENABLED'))return[];
-  try{
-    const searchResults=await ollamaWebSearch(_searchQuery(q));
-    if(!searchResults)return[];
-    const text=' '+_optionNorm(searchResults)+' ';
-    return o.map((option,index)=>({option,index})).filter(({option})=>{
-      const normalized=_optionNorm(option);
-      return normalized.length>=3&&text.includes(' '+normalized+' ');
-    }).map(({index})=>index).filter((index)=>!(ex||[]).includes(index));
-  }catch(error){console.warn('[providers] Non-AI multi-answer search failed:',error.message);return[];}
+
+async function askOpenRouterMulti(q, o, ex, n) {
+  if (!cfg('OPENROUTER_API_KEY') || orCooling()) return [];
+  const f = (ex || []).map((i) => o[i]).filter(Boolean);
+  try {
+    const r = await postOpenRouter([{ role: 'user', content: _multiPrompt(q, o, n, f) }], { maxTokens: 64, temperature: 0.2, timeout: 25 });
+    if (!r) return [];
+    const m = r.choices?.[0]?.message || {};
+    const ra = ((m.content || m.reasoning || '')).trim();
+    let p = _interpretMulti(ra, o, ex);
+    if (!p.length) p = _interpretMulti(ra, o);
+    return p;
+  } catch (e) { return []; }
 }
-async function askAiMulti(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.filter((match)=>match.verified===true&&!isWrong(o[match.index]));if(localOk.length)return localOk.map((match)=>match.index);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push(i);}if(!vp.length)for(let i=0;i<o.length;i++)vp.push(i);const fo=vp.map(i=>o[i]);const kp=[];if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,0.72);if(ki!==-1)kp.push(ki);const e=await keyAnswer(q);if(e){for(const i of _interpretMulti(e,fo))if(!kp.includes(i))kp.push(i);}}if(cfg('WEB_SEARCH_ENABLED')){const wp=await askWebMulti(q,fo);if(wp.length)return wp.map(p=>vp[p]).filter(p=>p<vp.length);}let nt='';if(kp.length)nt='Key suggests '+kp.map(p=>String(p+1)).join(', ')+'.';const exNote=_excludedNote(w);if(exNote)nt=(nt?nt+' ':'')+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const picks=await askCustomApiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('GEMINI_API_KEY')){const picks=await askGeminiMulti(q,fo,null,nt);if(picks.length)return picks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const webPicks=await askOpenRouterWebMulti(q,fo);if(webPicks.length)return webPicks.map(p=>vp[p]).filter(p=>p<vp.length);}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const pk=await askOpenRouterMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}try{const pk=await askOllamaMulti(q,fo,null,nt);if(pk.length)return pk.map(p=>vp[p]).filter(p=>p<vp.length);}catch(e){}if(kp.length)return kp.map(p=>vp[p]).filter(p=>p<vp.length);return[];}
-async function askWeb(q,o,oi){
-  if(!cfg('WEB_SEARCH_ENABLED'))return-1;
-  try{
-    const searchResults=await ollamaWebSearch(_searchQuery((q||'').slice(0,WEB_Q_CHARS)));
-    if(!searchResults)return-1;
-    const text=' '+_optionNorm(searchResults)+' ';
-    const matches=o.map((option,index)=>({option,index})).filter(({option})=>{
-      const normalized=_optionNorm(option);
-      return normalized.length>=3&&text.includes(' '+normalized+' ');
+
+async function askOpenRouterWebMulti(q, o, ex) {
+  if (!cfg('OPENROUTER_WEB_ENABLED') || !cfg('OPENROUTER_API_KEY') || _orWebDisabled || orCooling()) return [];
+  const excluded = (ex || []).map((index) => o[index]).filter(Boolean);
+  const prompt = _multiPrompt(q, o, 'Use web search results to select the correct options.', excluded);
+  const response = await postOpenRouter([{ role: 'user', content: prompt }], {
+    plugins: [{ id: 'web', engine: 'exa', max_results: cfg('WEB_SEARCH_MAX_RESULTS'), search_prompt: 'Exact question and answers.' }],
+    maxTokens: 100,
+    temperature: 0.1,
+    timeout: 45,
+  });
+  if (!response) return [];
+  const message = response.choices?.[0]?.message || {};
+  const first = ((message.content || message.reasoning || '').trim().split('\n')[0] || '');
+  return _interpretMulti(first, o, ex);
+}
+
+async function askOllamaMulti(q, o, ex, n) {
+  const f = (ex || []).map((i) => o[i]).filter(Boolean);
+  try {
+    const r = await postOllama(_multiPrompt(q, o, n, f), { numPredict: 48, temperature: 0.1, timeout: 45 });
+    if (r && r.response) {
+      const ra = r.response.trim();
+      let p = _interpretMulti(ra, o, ex);
+      if (!p.length) p = _interpretMulti(ra, o);
+      return p;
+    }
+    return [];
+  } catch (e) { return []; }
+}
+
+async function askCustomApiMulti(q, o, ex, n) {
+  if (!cfg('CUSTOM_API_KEY') || customCooling()) return [];
+  const f = (ex || []).map((i) => o[i]).filter(Boolean);
+  try {
+    const r = await postCustomApi([{ role: 'user', content: _multiPrompt(q, o, n, f) }], { maxTokens: 64, temperature: 0.2, timeout: 25 });
+    if (!r) return [];
+    const m = r.choices?.[0]?.message || {};
+    const ra = ((m.content || m.reasoning || '')).trim();
+    let p = _interpretMulti(ra, o, ex);
+    if (!p.length) p = _interpretMulti(ra, o);
+    return p;
+  } catch (e) { return []; }
+}
+
+async function askWebMulti(q, o, ex) {
+  if (!cfg('WEB_SEARCH_ENABLED')) return [];
+  try {
+    const searchResults = await ollamaWebSearch(_searchQuery(q));
+    if (!searchResults) return [];
+    const text = ' ' + _optionNorm(searchResults) + ' ';
+    return o.map((option, index) => ({ option, index })).filter(({ option }) => {
+      const normalized = _optionNorm(option);
+      return normalized.length >= 3 && text.includes(' ' + normalized + ' ');
+    }).map(({ index }) => index).filter((index) => !(ex || []).includes(index));
+  } catch (error) {
+    console.warn('[providers] Non-AI multi-answer search failed:', error.message);
+    return [];
+  }
+}
+
+async function askAiMulti(q, o, im) {
+  im = im || [];
+  const w = await getWrongAnswers(q);
+  const b = new Set(w.map((x) => normText(x)));
+  const isWrong = (option) => {
+    const on = normText(option);
+    if (!on) return false;
+    if (b.has(on)) return true;
+    for (const x of b) if (similarity(on, x) >= 0.9) return true;
+    return false;
+  };
+  const capPicks = (arr) => {
+    const cap = Number(cfg('MULTI_MAX_PICKS')) || 0;
+    return cap > 0 && arr.length > cap ? arr.slice(0, cap) : arr;
+  };
+
+  const local = await localBankOptionMatches(q, o);
+  const localOk = local.filter((match) => match.verified === true && !isWrong(o[match.index]));
+  if (localOk.length) return capPicks(localOk.map((match) => match.index));
+
+  const vp = [];
+  for (let i = 0; i < o.length; i++) {
+    const on = normText(o[i]);
+    if (!(b.has(on) || [...b].some((x) => similarity(on, x) >= 0.9))) vp.push(i);
+  }
+  if (!vp.length) for (let i = 0; i < o.length; i++) vp.push(i);
+  const fo = vp.map((i) => o[i]);
+
+  const kp = [];
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    const ki = await keyIndex(q, fo, 0.72);
+    if (ki !== -1) kp.push(ki);
+    const e = await keyAnswer(q);
+    if (e) {
+      for (const i of _interpretMulti(e, fo)) if (!kp.includes(i)) kp.push(i);
+    }
+  }
+  if (cfg('WEB_SEARCH_ENABLED')) {
+    const wp = await askWebMulti(q, fo);
+    if (wp.length) return capPicks(wp.map((p) => vp[p]).filter((p) => p < vp.length));
+  }
+  let nt = '';
+  if (kp.length) nt = 'Key suggests ' + kp.map((p) => String(p + 1)).join(', ') + '.';
+  const exNote = _excludedNote(w);
+  if (exNote) nt = (nt ? nt + ' ' : '') + exNote;
+
+  const mapBack = (picks) => capPicks(picks.map((p) => vp[p]).filter((p) => p !== undefined));
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    const picks = await askCustomApiMulti(q, fo, null, nt);
+    if (picks.length) return mapBack(picks);
+  }
+  if (cfg('GEMINI_API_KEY')) {
+    const picks = await askGeminiMulti(q, fo, null, nt);
+    if (picks.length) return mapBack(picks);
+  }
+  if (cfg('OPENROUTER_WEB_ENABLED') && cfg('OPENROUTER_API_KEY') && !_orWebDisabled && !orCooling()) {
+    const webPicks = await askOpenRouterWebMulti(q, fo);
+    if (webPicks.length) return mapBack(webPicks);
+  }
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    const pk = await askOpenRouterMulti(q, fo, null, nt);
+    if (pk.length) return mapBack(pk);
+  }
+  try {
+    const pk = await askOllamaMulti(q, fo, null, nt);
+    if (pk.length) return mapBack(pk);
+  } catch (e) { /* offline */ }
+  if (kp.length) return mapBack(kp);
+  return [];
+}
+
+async function askWeb(q, o, oi) {
+  if (!cfg('WEB_SEARCH_ENABLED')) return -1;
+  try {
+    const webChars = Number(cfg('WEB_Q_CHARS')) || 380;
+    const searchResults = await ollamaWebSearch(_searchQuery((q || '').slice(0, webChars)));
+    if (!searchResults) return -1;
+    const text = ' ' + _optionNorm(searchResults) + ' ';
+    const matches = o.map((option, index) => ({ option, index })).filter(({ option }) => {
+      const normalized = _optionNorm(option);
+      return normalized.length >= 3 && text.includes(' ' + normalized + ' ');
     });
-    if(matches.length!==1)return-1;
+    if (matches.length !== 1) return -1;
     return matches[0].index;
-  }catch(error){console.warn('[providers] Non-AI web search failed:',error.message);return-1;}
-}
-function _textPrompt(q,f,v,n,force,courseContext){
-  const hasBlank=BLANK_RE.test(q);
-  const asksAcronym=/\b(?:abbreviation|acronym)\b/i.test(q||'');
-  let prompt='';
-  const exNote=_excludedNote(f);
-  if(exNote)prompt+=exNote+' ';
-  if(f&&f.length){
-    const wrong=[...new Set(f)].sort().join(', ');
-    prompt+='Do NOT output any of these previously marked WRONG answers: '+wrong+'.\n\n';
-    prompt+='CRITICAL: Do NOT answer with: '+wrong+'.\n\n';
+  } catch (error) {
+    console.warn('[providers] Non-AI web search failed:', error.message);
+    return -1;
   }
-  if(v)prompt+=RETRY_VARIANTS[Math.min(v,RETRY_VARIANTS.length-1)]+'\n\n';
-  if(n)prompt=n+'\n\n'+prompt;
-  const blankRules=hasBlank
+}
+
+// ── Short-answer text ───────────────────────────────────────────────────────
+function _textPrompt(q, f, v, n, force, courseContext) {
+  const hasBlank = BLANK_RE.test(q);
+  const asksAcronym = /\b(?:abbreviation|acronym)\b/i.test(q || '');
+  let prompt = '';
+  const exNote = _excludedNote(f);
+  if (exNote) prompt += exNote + ' ';
+  if (f && f.length) {
+    const wrong = [...new Set(f)].sort().join(', ');
+    prompt += 'Do NOT output any of these previously marked WRONG answers: ' + wrong + '.\n\n';
+    prompt += 'CRITICAL: Do NOT answer with: ' + wrong + '.\n\n';
+  }
+  if (v) prompt += RETRY_VARIANTS[Math.min(v, RETRY_VARIANTS.length - 1)] + '\n\n';
+  if (n) prompt = n + '\n\n' + prompt;
+  const blankRules = hasBlank
     ? '\nTHE QUESTION HAS A ______ BLANK.\nReturn ONLY the exact concise missing module term (1-3 words). Do not write a full sentence, quotation marks, labels, explanations, or thinking preambles.\n'
     : '\nReturn ONLY the exact concise module term (1-3 words). Never write sentences, labels, explanations, or thinking preambles.\n';
-  const acronymRule=asksAcronym
+  const acronymRule = asksAcronym
     ? '\nThe question asks for an abbreviation or acronym: output ONLY the uppercase acronym (for example CPU, IDS, or OSI).\n'
     : '';
-  const termRule='\nDo not append filler words such as "Attack" or "Data" unless they are specifically part of the exact term. Examples: "Buffer Overflow", "Phishing", "Integrity", "Software".\n';
-  const unknownRule=force?'- NONE is not allowed.\n':'- If unknown, reply NONE\n';
-  const contextLine = courseContext ? '\nCourse/Subject: '+courseContext+'\n' : '';
-  return prompt+'You are an expert tutor.\n'+_domainNote(q)+contextLine+'\n'+unknownRule+blankRules+acronymRule+termRule+'Question: '+q+'\n\nReply with ONLY the exact answer.';
+  const termRule = '\nDo not append filler words such as "Attack" or "Data" unless they are specifically part of the exact term. Examples: "Buffer Overflow", "Phishing", "Integrity", "Software".\n';
+  const unknownRule = force ? '- NONE is not allowed.\n' : '- If unknown, reply NONE\n';
+  const contextLine = courseContext ? '\nCourse/Subject: ' + courseContext + '\n' : '';
+  return prompt + 'You are an expert tutor.\n' + _domainNote(q) + contextLine + '\n' + unknownRule + blankRules + acronymRule + termRule + 'Question: ' + q + '\n\nReply with ONLY the exact answer.';
 }
-function _conciseTextAnswer(answer,question){
-  const value=String(answer||'').trim();
-  if(!value)return'';
-  if(/\b(?:abbreviation|acronym)\b/i.test(question||'')){
-    return /^[A-Za-z0-9][A-Za-z0-9./+-]*$/.test(value)?value.toUpperCase():'';
+
+function _conciseTextAnswer(answer, question) {
+  const value = String(answer || '').trim();
+  if (!value) return '';
+  if (/\b(?:abbreviation|acronym)\b/i.test(question || '')) {
+    return /^[A-Za-z0-9][A-Za-z0-9./+-]*$/.test(value) ? value.toUpperCase() : '';
   }
-  return value.split(/\s+/).length<=3?value:'';
+  return value.split(/\s+/).length <= 3 ? value : '';
 }
-async function askOpenRouterText(q,bl,f,t,v,n,force,courseContext){if(!cfg('OPENROUTER_API_KEY')||orCooling())return'';try{const r=await postOpenRouter([{role:'user',content:_textPrompt(q,f,v,n,force,courseContext)}],{maxTokens:80,temperature:t??0.1,timeout:25,quiet:true});if(!r)return'';const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();return _cleanTyped(ra,bl);}catch(e){_recordProviderFailure('OpenRouter',e.status,e.message);return'';}}
-async function askOllamaText(q,bl,f,t,v,n,force,courseContext){try{const r=await postOllama(_textPrompt(q,f,v,n,force,courseContext),{numPredict:60,temperature:t??0.1,timeout:35,quiet:true});if(r&&r.response)return _cleanTyped(r.response.trim(),bl);return'';}catch(e){_recordProviderFailure('Ollama',e.status,e.message);return'';}}
-async function askCustomApiText(q,bl,f,t,v,n,force,courseContext){if(!cfg('CUSTOM_API_KEY')||customCooling())return'';try{const r=await postCustomApi([{role:'user',content:_textPrompt(q,f,v,n,force,courseContext)}],{maxTokens:80,temperature:t??0.1,timeout:25,quiet:true});if(!r)return'';const m=r.choices?.[0]?.message||{};const ra=((m.content||m.reasoning||'')).trim();return _cleanTyped(ra,bl);}catch(e){_recordProviderFailure('FreeLLMAPI',e.status,e.message);return'';}}
-async function askWebText(q){
-  if(!cfg('WEB_SEARCH_ENABLED'))return'';
-  try{
-    const question=(q||'').includes('\n\n')?(q||'').split('\n\n').pop():q;
+
+async function askOpenRouterText(q, bl, f, t, v, n, force, courseContext) {
+  if (!cfg('OPENROUTER_API_KEY') || orCooling()) return '';
+  try {
+    const r = await postOpenRouter([{ role: 'user', content: _textPrompt(q, f, v, n, force, courseContext) }], { maxTokens: 80, temperature: t ?? 0.1, timeout: 25, quiet: true });
+    if (!r) return '';
+    const m = r.choices?.[0]?.message || {};
+    return _cleanTyped((m.content || m.reasoning || '').trim(), bl);
+  } catch (e) {
+    _recordProviderFailure('OpenRouter', e.status, e.message);
+    return '';
+  }
+}
+
+async function askOllamaText(q, bl, f, t, v, n, force, courseContext) {
+  try {
+    const r = await postOllama(_textPrompt(q, f, v, n, force, courseContext), { numPredict: 60, temperature: t ?? 0.1, timeout: 35, quiet: true });
+    if (r && r.response) return _cleanTyped(r.response.trim(), bl);
+    return '';
+  } catch (e) {
+    _recordProviderFailure('Ollama', e.status, e.message);
+    return '';
+  }
+}
+
+async function askCustomApiText(q, bl, f, t, v, n, force, courseContext) {
+  if (!cfg('CUSTOM_API_KEY') || customCooling()) return '';
+  try {
+    const r = await postCustomApi([{ role: 'user', content: _textPrompt(q, f, v, n, force, courseContext) }], { maxTokens: 80, temperature: t ?? 0.1, timeout: 25, quiet: true });
+    if (!r) return '';
+    const m = r.choices?.[0]?.message || {};
+    return _cleanTyped((m.content || m.reasoning || '').trim(), bl);
+  } catch (e) {
+    _recordProviderFailure('FreeLLMAPI', e.status, e.message);
+    return '';
+  }
+}
+
+async function askWebText(q) {
+  if (!cfg('WEB_SEARCH_ENABLED')) return '';
+  try {
+    const question = (q || '').includes('\n\n') ? (q || '').split('\n\n').pop() : q;
     return await ollamaWebSearch(_searchQuery(question));
-  }catch(error){console.warn('[providers] Non-AI text search failed:',error.message);return'';}
+  } catch (error) {
+    console.warn('[providers] Non-AI text search failed:', error.message);
+    return '';
+  }
 }
 
-// -- matching + askAiText + askAi --
-
-async function askAiText(q,wrongList){
-  const bl=BLANK_RE.test(q);
-  const w=Array.isArray(wrongList)?wrongList:await answerKeyGetWrong(q);
-  const b=new Set(w.map(x=>normText(x)));
-  const local=await localBankAnswerHits(q);
-  if(local&&local.length){
-    const ok=local.find((hit)=>hit.verified===true&&!b.has(normText(hit.answer)));
-    if(ok)return _cleanTyped(ok.answer,bl);
+async function askAiText(q, wrongList) {
+  const bl = BLANK_RE.test(q);
+  const w = Array.isArray(wrongList) ? wrongList : await answerKeyGetWrong(q);
+  const b = new Set(w.map((x) => normText(x)));
+  const local = await localBankAnswerHits(q);
+  if (local && local.length) {
+    const ok = local.find((hit) => hit.verified === true && !b.has(normText(hit.answer)));
+    if (ok) return _cleanTyped(ok.answer, bl);
   }
-  const chq=(q||'').replace(/[_\-]{2,}/g,' ').replace(/\s+/g,' ').trim();
-  // Neither the local bank nor (checked next) amauoed.com knew this question,
-  // so the DuckDuckGo snippet lookup starts right now: it downloads while the
-  // answer-key request is in flight, which keeps the extra latency at ~0.
-  const snippetLookup=webSnippetLookup(chq);
-  if(cfg('ANSWER_KEY_ENABLED')){const ka=await keyAnswer(chq);if(ka&&!b.has(normText(ka)))return ka;}
-  if(cfg('WEB_SEARCH_ENABLED')){const results=await askWebText(q);if(results)q+='\n\nNon-AI web search snippets (reference only):\n'+results.slice(0,2000);}
-  const snippets=await snippetLookup;
-  if(snippets)q+='\n\nReference search snippets:\n'+snippets+'\n\nBased on the question and reference snippets above, reply ONLY with the exact concise module term (1-3 words), with no explanation.';
-
-  if(cfg('ANSWER_KEY_ENABLED')){const h=await hintText(chq);if(h)q+='\n\n'+h;}
+  const chq = (q || '').replace(/[_\-]{2,}/g, ' ').replace(/\s+/g, ' ').trim();
+  const snippetLookup = webSnippetLookup(chq);
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    const ka = await keyAnswer(chq);
+    if (ka && !b.has(normText(ka))) return ka;
+  }
+  if (cfg('WEB_SEARCH_ENABLED')) {
+    const results = await askWebText(q);
+    if (results) q += '\n\nNon-AI web search snippets (reference only):\n' + results.slice(0, 2000);
+  }
+  const snippets = await snippetLookup;
+  if (snippets) {
+    q += '\n\nReference search snippets:\n' + snippets + '\n\nBased on the question and reference snippets above, reply ONLY with the exact concise module term (1-3 words), with no explanation.';
+  }
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    const h = await hintText(chq);
+    if (h) q += '\n\n' + h;
+  }
 
   const courseContext = getCourseContext();
-  let lg='',nt='';
-  const tp=async(name,fn)=>{
-    const ep=[...b].some(x=>_echoesQuestion(x,q))?1:0;
-    for(let r=0;r<cfg('MAX_TEXT_RETRIES');r++){
-      const v=Math.min(ep+r,RETRY_VARIANTS.length-1);
-      const temps=[0.1,0.5,0.75,0.95];
-      let a=await fn(q,bl,b.size?[...b]:null,temps[r%4],v,nt,false,courseContext);
-      if(!a)continue;
-      a=_conciseTextAnswer(a,q);
-      if(!a){
-        if(typeof logHUD==='function')logHUD('warn',name+': rejected answer outside the concise 1-3 word format');
+  let lg = '';
+  let nt = '';
+  const tp = async (name, fn) => {
+    const ep = [...b].some((x) => _echoesQuestion(x, q)) ? 1 : 0;
+    for (let r = 0; r < cfg('MAX_TEXT_RETRIES'); r++) {
+      const v = Math.min(ep + r, RETRY_VARIANTS.length - 1);
+      const temps = [0.1, 0.5, 0.75, 0.95];
+      let a = await fn(q, bl, b.size ? [...b] : null, temps[r % 4], v, nt, false, courseContext);
+      if (!a) continue;
+      a = _conciseTextAnswer(a, q);
+      if (!a) {
+        if (typeof logHUD === 'function') logHUD('warn', name + ': rejected answer outside the concise 1-3 word format');
         continue;
       }
-      if(isConversationalFiller(a) || a.length > 60){
-        if(typeof logHUD==='function') logHUD('warn', name+': rejected conversational/long answer ('+a.length+' chars): '+a.slice(0,80));
+      if (isConversationalFiller(a) || a.length > 60) {
+        if (typeof logHUD === 'function') logHUD('warn', name + ': rejected conversational/long answer (' + a.length + ' chars): ' + a.slice(0, 80));
         continue;
       }
-      lg=a;
-      if(b.has(normText(a))){nt='Do NOT answer: '+[...b].sort().join(', ')+'.';continue;}
-      if(_echoesQuestion(a,q)&&r<cfg('MAX_TEXT_RETRIES')-1){nt='The answer echoes the question.';b.add(normText(a));continue;}
+      lg = a;
+      if (b.has(normText(a))) { nt = 'Do NOT answer: ' + [...b].sort().join(', ') + '.'; continue; }
+      if (_echoesQuestion(a, q) && r < cfg('MAX_TEXT_RETRIES') - 1) { nt = 'The answer echoes the question.'; b.add(normText(a)); continue; }
       return a;
     }
     return '';
   };
-  // Provider waterfall — exactly the order askAi() uses for MCQ questions:
-  // Local Bank (above) → FreeLLMAPI / Custom OpenAI-compatible endpoint →
-  // Gemini → OpenRouter → local Ollama. Web search already ran above and its
-  // snippets are folded into the prompt, so there is no extra web stage here.
-  // Each step announces which provider is being asked and, when it produces
-  // nothing, why it was skipped or failed (HTTP status / error message) so the
-  // HUD never ends on a bare "No AI answer (...)".
-  const tlog=(level,message)=>{if(typeof logHUD==='function')logHUD(level,message);};
-  const skipNote=(name)=>{
-    if(name==='FreeLLMAPI')return _skipReason(_customDisabled,_customCooldownUntil);
-    if(name==='Gemini')return _skipReason(_geminiDisabled,_geminiCooldownUntil);
-    if(name==='OpenRouter')return _skipReason(_orDisabled,_orCooldownUntil);
+
+  const tlog = (level, message) => { if (typeof logHUD === 'function') logHUD(level, message); };
+  const skipNote = (name) => {
+    if (name === 'FreeLLMAPI') return _skipReason(_customDisabled, _customCooldownUntil);
+    if (name === 'Gemini') return _skipReason(_geminiDisabled, _geminiCooldownUntil);
+    if (name === 'OpenRouter') return _skipReason(_orDisabled, _orCooldownUntil);
     return '';
   };
-  const askTextProvider=async(name,keyName,fn)=>{
-    if(keyName&&!String(cfg(keyName)||'').trim()){tlog('warn',name+' skipped: '+keyName+' not set');return'';}
-    const cooling=skipNote(name);
-    if(cooling){tlog('warn',name+' skipped: '+cooling);return'';}
-    tlog('info','AI text lookup via '+name+'...');
-    const startedAt=Date.now();
-    let answer='';
-    try{
-      answer=await tp(name,fn);
-    }catch(error){
-      const status=Number(error&&(error.status||(String(error.message||'').match(/\bHTTP\s+(\d{3})\b/i)||[])[1]))||0;
-      _recordProviderFailure(name,status,(error&&error.message)||String(error));
+  const askTextProvider = async (name, keyName, fn) => {
+    if (keyName && !String(cfg(keyName) || '').trim()) { tlog('warn', name + ' skipped: ' + keyName + ' not set'); return ''; }
+    const cooling = skipNote(name);
+    if (cooling) { tlog('warn', name + ' skipped: ' + cooling); return ''; }
+    tlog('info', 'AI text lookup via ' + name + '...');
+    const startedAt = Date.now();
+    let answer = '';
+    try {
+      answer = await tp(name, fn);
+    } catch (error) {
+      const status = Number(error && (error.status || (String(error.message || '').match(/\bHTTP\s+(\d{3})\b/i) || [])[1])) || 0;
+      _recordProviderFailure(name, status, (error && error.message) || String(error));
     }
-    if(answer)return answer;
-    tlog('warn',name+' failed: '+(_providerFailure(name,startedAt)||'no usable answer returned'));
+    if (answer) return answer;
+    tlog('warn', name + ' failed: ' + (_providerFailure(name, startedAt) || 'no usable answer returned'));
     return '';
   };
-  let answer=await askTextProvider('FreeLLMAPI','CUSTOM_API_KEY',askCustomApiText);if(answer)return answer;
-  answer=await askTextProvider('Gemini','GEMINI_API_KEY',askGeminiText);if(answer)return answer;
-  answer=await askTextProvider('OpenRouter','OPENROUTER_API_KEY',askOpenRouterText);if(answer)return answer;
-  answer=await askTextProvider('Ollama','',askOllamaText);if(answer)return answer;
-  try{const f=_conciseTextAnswer(await askOllamaText(q,bl,b.size?[...b]:null,0.3,RETRY_VARIANTS.length-1,nt,true,courseContext),q);if(f&&!b.has(normText(f))&&!isConversationalFiller(f)&&f.length<=60)return f;}catch(e){}
-  if(cfg('TYPE_ON_FAILURE')&&lg&&!b.has(normText(lg))&&!isConversationalFiller(lg)&&lg.length<=60)return lg;
+
+  let answer = await askTextProvider('FreeLLMAPI', 'CUSTOM_API_KEY', askCustomApiText);
+  if (answer) return answer;
+  answer = await askTextProvider('Gemini', 'GEMINI_API_KEY', askGeminiText);
+  if (answer) return answer;
+  answer = await askTextProvider('OpenRouter', 'OPENROUTER_API_KEY', askOpenRouterText);
+  if (answer) return answer;
+  answer = await askTextProvider('Ollama', '', askOllamaText);
+  if (answer) return answer;
+  try {
+    const f = _conciseTextAnswer(await askOllamaText(q, bl, b.size ? [...b] : null, 0.3, RETRY_VARIANTS.length - 1, nt, true, courseContext), q);
+    if (f && !b.has(normText(f)) && !isConversationalFiller(f) && f.length <= 60) return f;
+  } catch (e) { /* offline */ }
+  if (cfg('TYPE_ON_FAILURE') && lg && !b.has(normText(lg)) && !isConversationalFiller(lg) && lg.length <= 60) return lg;
   return '';
 }
 
-function getCourseContext(){
-  if(typeof document==='undefined') return '';
+function getCourseContext() {
+  if (typeof document === 'undefined') return '';
   const breadcrumb = document.querySelector('.breadcrumb a[href*="/course/view.php"]');
   const heading = document.querySelector('.page-header-headings h1, h1');
   const parts = [];
-  if(breadcrumb && breadcrumb.textContent) parts.push(breadcrumb.textContent.trim());
-  if(heading && heading.textContent) parts.push(heading.textContent.trim());
-  if(document.title) parts.push(document.title.trim());
-  const ctx = parts.filter(Boolean).join(' > ');
-  return ctx.slice(0, 120);
+  if (breadcrumb && breadcrumb.textContent) parts.push(breadcrumb.textContent.trim());
+  if (heading && heading.textContent) parts.push(heading.textContent.trim());
+  if (document.title) parts.push(document.title.trim());
+  return parts.filter(Boolean).join(' > ').slice(0, 120);
 }
 
-function isConversationalFiller(text){
-  const t = (text||'').toLowerCase();
-  const phrases = ["user's request","cannot","sorry","as an ai","i cannot","i'm unable","i am unable","i'm not able","i am not able","we need","please provide","let me know","happy to help","how can i","here is","here's the","the answer is","answer:","response:","explanation:"];
-  return phrases.some(p => t.includes(p));
+function isConversationalFiller(text) {
+  const t = (text || '').toLowerCase();
+  const phrases = [
+    "user's request", 'cannot', 'sorry', 'as an ai', 'i cannot', "i'm unable", 'i am unable',
+    "i'm not able", 'i am not able', 'we need', 'please provide', 'let me know', 'happy to help',
+    'how can i', 'here is', "here's the", 'the answer is', 'answer:', 'response:', 'explanation:',
+  ];
+  return phrases.some((p) => t.includes(p));
 }
-const _LINE_RE=/^\s*(\d{1,2})\s*[.)-:]?\s*(.+)$/;const _PROSE_LETTER_RE=/(?<![.\d])(\d{1,2})\s*[.)-:]\s*([A-Z])(?![A-Za-z])/g;
-function _parseMapping(raw,options,n,skip,used){
-  used=new Set(used||[]);
-  const skipped=new Set(skip||[]);
-  const idxs=new Array(n).fill(-1);
-  let matched=0;
-  const letters={};
-  for(let i=0;i<options.length;i++)letters[String.fromCharCode(65+i)]=i;
-  const take=(i,j)=>{if(j===-1||used.has(j)||idxs[i]!==-1)return false;idxs[i]=j;used.add(j);matched++;return true;};
-  for(const rawLine of(raw||'').split('\n')){
-    const line=rawLine.trim().replace(/[*_]/g,'').trim();
-    if(!line)continue;
-    const match=line.match(_LINE_RE);
-    if(!match)continue;
-    const i=parseInt(match[1],10)-1;
-    if(i<0||i>=n||idxs[i]!==-1||skipped.has(i))continue;
-    const rest=match[2].trim().replace(/[*' ]/g,'').trim();
-    if(!rest||/^NONE/i.test(rest))continue;
-    let j=-1;
-    const token=rest.replace(/[ .)\-:]/g,'').trim();
-    if(token.length===1&&token.toUpperCase()in letters&&!used.has(letters[token.toUpperCase()]))j=letters[token.toUpperCase()];
-    if(j===-1){
-      let best=-1,score=0;
-      for(let k=0;k<options.length;k++){if(used.has(k))continue;const candidate=similarity(rest.toLowerCase(),options[k].toLowerCase());if(candidate>score){best=k;score=candidate;}}
-      if(best!==-1&&score>=0.45)j=best;
+
+// ── Matching questions (legacy + batch) ─────────────────────────────────────
+const _LINE_RE = /^\s*(\d{1,2})\s*[.)-:]?\s*(.+)$/;
+const _PROSE_LETTER_RE = /(?<![.\d])(\d{1,2})\s*[.)-:]\s*([A-Z])(?![A-Za-z])/g;
+
+function _parseMapping(raw, options, n, skip, used) {
+  used = new Set(used || []);
+  const skipped = new Set(skip || []);
+  const idxs = new Array(n).fill(-1);
+  let matched = 0;
+  const letters = {};
+  for (let i = 0; i < options.length; i++) letters[String.fromCharCode(65 + i)] = i;
+  const take = (i, j) => {
+    if (j === -1 || used.has(j) || idxs[i] !== -1) return false;
+    idxs[i] = j;
+    used.add(j);
+    matched++;
+    return true;
+  };
+  for (const rawLine of (raw || '').split('\n')) {
+    const line = rawLine.trim().replace(/[*_]/g, '').trim();
+    if (!line) continue;
+    const match = line.match(_LINE_RE);
+    if (!match) continue;
+    const i = parseInt(match[1], 10) - 1;
+    if (i < 0 || i >= n || idxs[i] !== -1 || skipped.has(i)) continue;
+    const rest = match[2].trim().replace(/[*' ]/g, '').trim();
+    if (!rest || /^NONE/i.test(rest)) continue;
+    let j = -1;
+    const token = rest.replace(/[ .)\-:]/g, '').trim();
+    if (token.length === 1 && token.toUpperCase() in letters && !used.has(letters[token.toUpperCase()])) {
+      j = letters[token.toUpperCase()];
     }
-    take(i,j);
+    if (j === -1) {
+      let best = -1;
+      let score = 0;
+      for (let k = 0; k < options.length; k++) {
+        if (used.has(k)) continue;
+        const candidate = similarity(rest.toLowerCase(), options[k].toLowerCase());
+        if (candidate > score) { best = k; score = candidate; }
+      }
+      if (best !== -1 && score >= 0.45) j = best;
+    }
+    take(i, j);
   }
-  if(matched===0){
+  if (matched === 0) {
     let match;
-    _PROSE_LETTER_RE.lastIndex=0;
-    while((match=_PROSE_LETTER_RE.exec(raw||''))!==null){
-      const i=parseInt(match[1],10)-1;
-      if(i<0||i>=n||skipped.has(i)||idxs[i]!==-1)continue;
-      const candidate=letters[match[2]];
-      if(candidate!==undefined)take(i,candidate);
+    _PROSE_LETTER_RE.lastIndex = 0;
+    while ((match = _PROSE_LETTER_RE.exec(raw || '')) !== null) {
+      const i = parseInt(match[1], 10) - 1;
+      if (i < 0 || i >= n || skipped.has(i) || idxs[i] !== -1) continue;
+      const candidate = letters[match[2]];
+      if (candidate !== undefined) take(i, candidate);
     }
   }
-  if(matched===0){
-    const bare=(raw||'').split('\n').map((line)=>line.trim().replace(/[*`']/g,'').trim()).filter(Boolean);
-    if(bare.length===n){
-      for(let i=0;i<n;i++){
-        if(skipped.has(i))continue;
-        let best=-1,score=0;
-        for(let k=0;k<options.length;k++){if(used.has(k))continue;const candidate=similarity(bare[i].toLowerCase(),options[k].toLowerCase());if(candidate>score){best=k;score=candidate;}}
-        if(best!==-1&&score>=0.5)take(i,best);
+  if (matched === 0) {
+    const bare = (raw || '').split('\n').map((line) => line.trim().replace(/[*`']/g, '').trim()).filter(Boolean);
+    if (bare.length === n) {
+      for (let i = 0; i < n; i++) {
+        if (skipped.has(i)) continue;
+        let best = -1;
+        let score = 0;
+        for (let k = 0; k < options.length; k++) {
+          if (used.has(k)) continue;
+          const candidate = similarity(bare[i].toLowerCase(), options[k].toLowerCase());
+          if (candidate > score) { best = k; score = candidate; }
+        }
+        if (best !== -1 && score >= 0.5) take(i, best);
       }
     }
   }
-  return{idxs,matched};
+  return { idxs, matched };
 }
-function _matchingOk(matched,remaining){if(remaining<=0)return true;return matched>=Math.max(1,Math.round(remaining*cfg('MATCHING_MIN_MATCHED')));}
-function _bestOptionIndex(text,options,used){let best=-1,score=0;const t=(text||'').toLowerCase().trim();if(!t)return -1;for(let k=0;k<options.length;k++){if(used.has(k))continue;const o=options[k].toLowerCase();let s=similarity(t,o);if(t===o)s=1;else if(t.includes(o)||o.includes(t))s=Math.max(s,0.9);if(s>score){best=k;score=s;}}return score>=cfg('MATCHING_OPTION_FLOOR')?best:-1;}
-function _matchingPrompt(header,statements,options,n,locked){const letters=options.map((_,i)=>String.fromCharCode(65+i));const items=letters.map((l,i)=>l+'. '+options[i]).join('\n');const numbered=statements.map((s,i)=>i+1+'. '+(s||'[blank]')).join('\n');let fixed='';if(locked&&locked.length)fixed='\nALREADY ANSWERED:\n'+locked.map(([i,j])=>i+1+'. '+String.fromCharCode(65+j)).join('\n')+'\n';const head=header?header+'\n\n':'';return 'You are completing a matching exam question.\n\n'+head+'STATEMENTS:\n'+numbered+'\n\nITEMS:\n'+items+fixed+'\nReply with exactly '+n+' lines using ONLY letters.\n1. B\n2. E\n...';}
-async function askAiMatching(header,statements,options,n,locked,used){used=new Set(used||[]);const skip=new Set((locked||[]).map(x=>x[0]));const remaining=n-skip.size;let prompt=_matchingPrompt(header,statements,options,n,locked);if(cfg('WEB_SEARCH_ENABLED')){try{const context=await ollamaWebSearch(_searchQuery([header,...statements,...options].join(' ')));if(context)prompt+='\n\nNon-AI web search snippets (reference only):\n'+context.slice(0,2000);}catch(error){console.warn('[providers] Matching web search failed:',error.message);}}let bestIdxs=null,bestMatched=0;const consider=(idxs,matched)=>{if(matched>bestMatched){bestIdxs=idxs;bestMatched=matched;}};if(cfg('GEMINI_API_KEY')){const raw=await _askGeminiPrompt(prompt,{maxTokens:260,temperature:0.1,timeout:30});if(raw){const result=_parseMapping(raw,options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){try{const r=await postOpenRouter([{role:'user',content:prompt}],{maxTokens:260,temperature:0.1,timeout:30});if(r){const msg=r.choices?.[0]?.message||{};const raw=((msg.content||msg.reasoning||'')).trim();const result=_parseMapping(raw,options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}catch(e){}}try{const r=await postOllama(prompt,{numPredict:300,temperature:0.1,timeout:45});if(r&&r.response){const result=_parseMapping(r.response.trim(),options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}catch(e){}if(bestIdxs!==null&&bestMatched>0)return{idxs:bestIdxs,matched:bestMatched};return{idxs:new Array(n).fill(-1),matched:0};}
-async function resolveMatching(header,statements,options,n){const idxs=new Array(n).fill(-1);const src=new Array(n).fill('');const used=new Set();let keyed=0;for(let i=0;i<n;i++){if(!statements[i])continue;const matches=await localBankOptionMatches(statements[i],options);const match=matches.find((item)=>!used.has(item.index));if(!match)continue;idxs[i]=match.index;src[i]='key';used.add(match.index);keyed++;}if(cfg('ANSWER_KEY_ENABLED')){for(let i=0;i<n;i++){if(idxs[i]!==-1||!statements[i])continue;const ans=await keyMatchAnswer(statements[i]);if(!ans)continue;const j=_bestOptionIndex(ans,options,used);if(j===-1)continue;idxs[i]=j;src[i]='key';used.add(j);keyed++;}}if(keyed===n)return{idxs,src,keyed,aiMatched:0};const openBlanks=[];for(let i=0;i<n;i++)if(idxs[i]===-1)openBlanks.push(i);const locked=[];for(let i=0;i<n;i++)if(idxs[i]!==-1)locked.push([i,idxs[i]]);let aiMatched=0;if(openBlanks.length&&used.size<options.length){const res=await askAiMatching(header,statements,options,n,locked,used);for(const i of openBlanks){if(res.idxs[i]!==-1&&!used.has(res.idxs[i])){idxs[i]=res.idxs[i];src[i]='ai';used.add(res.idxs[i]);aiMatched++;}}}const unused=[];for(let j=0;j<options.length;j++)if(!used.has(j))unused.push(j);for(let i=0;i<n;i++)if(idxs[i]===-1&&unused.length){idxs[i]=unused.shift();src[i]='elim';}return{idxs,src,keyed,aiMatched};}
-// ── Matching questions: one batch request for every unanswered row ──────────
-// `rows` is [{ rowIndex, subStatement }] where rowIndex is the 1-based row
-// number shown to the model. The model answers with a strict JSON object that
-// maps that same number (as a string) to an exact item from `options`, so the
-// whole dropdown block is resolved with a single request instead of one call
-// per row.
+
+function _matchingOk(matched, remaining) {
+  if (remaining <= 0) return true;
+  return matched >= Math.max(1, Math.round(remaining * cfg('MATCHING_MIN_MATCHED')));
+}
+
+function _bestOptionIndex(text, options, used) {
+  let best = -1;
+  let score = 0;
+  const t = (text || '').toLowerCase().trim();
+  if (!t) return -1;
+  for (let k = 0; k < options.length; k++) {
+    if (used.has(k)) continue;
+    const o = options[k].toLowerCase();
+    let s = similarity(t, o);
+    if (t === o) s = 1;
+    else if (t.includes(o) || o.includes(t)) s = Math.max(s, 0.9);
+    if (s > score) { best = k; score = s; }
+  }
+  return score >= cfg('MATCHING_OPTION_FLOOR') ? best : -1;
+}
+
+function _matchingPrompt(header, statements, options, n, locked) {
+  const letters = options.map((_, i) => String.fromCharCode(65 + i));
+  const items = letters.map((l, i) => l + '. ' + options[i]).join('\n');
+  const numbered = statements.map((s, i) => (i + 1) + '. ' + (s || '[blank]')).join('\n');
+  let fixed = '';
+  if (locked && locked.length) {
+    fixed = '\nALREADY ANSWERED:\n' + locked.map(([i, j]) => (i + 1) + '. ' + String.fromCharCode(65 + j)).join('\n') + '\n';
+  }
+  const head = header ? header + '\n\n' : '';
+  return 'You are completing a matching exam question.\n\n' + head + 'STATEMENTS:\n' + numbered + '\n\nITEMS:\n' + items + fixed + '\nReply with exactly ' + n + ' lines using ONLY letters.\n1. B\n2. E\n...';
+}
+
+async function askAiMatching(header, statements, options, n, locked, used) {
+  used = new Set(used || []);
+  const skip = new Set((locked || []).map((x) => x[0]));
+  const remaining = n - skip.size;
+  let prompt = _matchingPrompt(header, statements, options, n, locked);
+  if (cfg('WEB_SEARCH_ENABLED')) {
+    try {
+      const context = await ollamaWebSearch(_searchQuery([header, ...statements, ...options].join(' ')));
+      if (context) prompt += '\n\nNon-AI web search snippets (reference only):\n' + context.slice(0, 2000);
+    } catch (error) { console.warn('[providers] Matching web search failed:', error.message); }
+  }
+  let bestIdxs = null;
+  let bestMatched = 0;
+  const consider = (idxs, matched) => { if (matched > bestMatched) { bestIdxs = idxs; bestMatched = matched; } };
+
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    try {
+      const r = await postCustomApi([{ role: 'user', content: prompt }], { maxTokens: 260, temperature: 0.1, timeout: 30 });
+      if (r) {
+        const msg = r.choices?.[0]?.message || {};
+        const result = _parseMapping((msg.content || msg.reasoning || '').trim(), options, n, skip, used);
+        if (_matchingOk(result.matched, remaining)) return result;
+        consider(result.idxs, result.matched);
+      }
+    } catch (e) { /* try next */ }
+  }
+  if (cfg('GEMINI_API_KEY')) {
+    const raw = await _askGeminiPrompt(prompt, { maxTokens: 260, temperature: 0.1, timeout: 30 });
+    if (raw) {
+      const result = _parseMapping(raw, options, n, skip, used);
+      if (_matchingOk(result.matched, remaining)) return result;
+      consider(result.idxs, result.matched);
+    }
+  }
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    try {
+      const r = await postOpenRouter([{ role: 'user', content: prompt }], { maxTokens: 260, temperature: 0.1, timeout: 30 });
+      if (r) {
+        const msg = r.choices?.[0]?.message || {};
+        const result = _parseMapping((msg.content || msg.reasoning || '').trim(), options, n, skip, used);
+        if (_matchingOk(result.matched, remaining)) return result;
+        consider(result.idxs, result.matched);
+      }
+    } catch (e) { /* try next */ }
+  }
+  try {
+    const r = await postOllama(prompt, { numPredict: 300, temperature: 0.1, timeout: 45 });
+    if (r && r.response) {
+      const result = _parseMapping(r.response.trim(), options, n, skip, used);
+      if (_matchingOk(result.matched, remaining)) return result;
+      consider(result.idxs, result.matched);
+    }
+  } catch (e) { /* offline */ }
+  if (bestIdxs !== null && bestMatched > 0) return { idxs: bestIdxs, matched: bestMatched };
+  return { idxs: new Array(n).fill(-1), matched: 0 };
+}
+
+async function resolveMatching(header, statements, options, n) {
+  const idxs = new Array(n).fill(-1);
+  const src = new Array(n).fill('');
+  const used = new Set();
+  let keyed = 0;
+  for (let i = 0; i < n; i++) {
+    if (!statements[i]) continue;
+    const matches = await localBankOptionMatches(statements[i], options);
+    const match = matches.find((item) => !used.has(item.index));
+    if (!match) continue;
+    idxs[i] = match.index;
+    src[i] = 'key';
+    used.add(match.index);
+    keyed++;
+  }
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    for (let i = 0; i < n; i++) {
+      if (idxs[i] !== -1 || !statements[i]) continue;
+      const ans = await keyMatchAnswer(statements[i]);
+      if (!ans) continue;
+      const j = _bestOptionIndex(ans, options, used);
+      if (j === -1) continue;
+      idxs[i] = j;
+      src[i] = 'key';
+      used.add(j);
+      keyed++;
+    }
+  }
+  if (keyed === n) return { idxs, src, keyed, aiMatched: 0 };
+  const openBlanks = [];
+  for (let i = 0; i < n; i++) if (idxs[i] === -1) openBlanks.push(i);
+  const locked = [];
+  for (let i = 0; i < n; i++) if (idxs[i] !== -1) locked.push([i, idxs[i]]);
+  let aiMatched = 0;
+  if (openBlanks.length && used.size < options.length) {
+    const res = await askAiMatching(header, statements, options, n, locked, used);
+    for (const i of openBlanks) {
+      if (res.idxs[i] !== -1 && !used.has(res.idxs[i])) {
+        idxs[i] = res.idxs[i];
+        src[i] = 'ai';
+        used.add(res.idxs[i]);
+        aiMatched++;
+      }
+    }
+  }
+  const unused = [];
+  for (let j = 0; j < options.length; j++) if (!used.has(j)) unused.push(j);
+  for (let i = 0; i < n; i++) {
+    if (idxs[i] === -1 && unused.length) {
+      idxs[i] = unused.shift();
+      src[i] = 'elim';
+    }
+  }
+  return { idxs, src, keyed, aiMatched };
+}
+
 function _matchingBatchPrompt(rows, options, header) {
-  const rowLines=rows.map((row)=>'ROW '+row.rowIndex+': '+(row.subStatement||'[statement unavailable]')).join('\n');
-  const itemLines=options.map((option,index)=>(index+1)+'. '+option).join('\n');
-  const headerLine=header?'QUESTION: '+header+'\n':'';
-  return 'You are completing one matching exam question. Each row is a statement with a missing term and must be matched to exactly one item from the shared ITEMS list.\n\n'+
-    headerLine+
-    'ROWS:\n'+rowLines+'\n\n'+
-    'ITEMS:\n'+itemLines+'\n\n'+
-    'Rules:\n'+
-    '- Reply with one strict JSON object and nothing else (no prose, no markdown fences).\n'+
-    '- Keys are ROW numbers as strings; values are the EXACT item text copied character-for-character from ITEMS.\n'+
-    '- Assign each item to at most one row and prefer a one-to-one assignment.\n'+
-    '- Omit a row when no item clearly fits instead of guessing.\n'+
-    '- Some items differ by small words ("information security" vs "also information security"); copy the exact one that fits the statement.\n'+
+  const rowLines = rows.map((row) => 'ROW ' + row.rowIndex + ': ' + (row.subStatement || '[statement unavailable]')).join('\n');
+  const itemLines = options.map((option, index) => (index + 1) + '. ' + option).join('\n');
+  const headerLine = header ? 'QUESTION: ' + header + '\n' : '';
+  return 'You are completing one matching exam question. Each row is a statement with a missing term and must be matched to exactly one item from the shared ITEMS list.\n\n' +
+    headerLine +
+    'ROWS:\n' + rowLines + '\n\n' +
+    'ITEMS:\n' + itemLines + '\n\n' +
+    'Rules:\n' +
+    '- Reply with one strict JSON object and nothing else (no prose, no markdown fences).\n' +
+    '- Keys are ROW numbers as strings; values are the EXACT item text copied character-for-character from ITEMS.\n' +
+    '- Assign each item to at most one row and prefer a one-to-one assignment.\n' +
+    '- Omit a row when no item clearly fits instead of guessing.\n' +
+    '- Some items differ by small words ("information security" vs "also information security"); copy the exact one that fits the statement.\n' +
     '- Example shape: {"1": "first item text", "2": "second item text"}';
 }
+
 function _extractJsonObject(raw) {
-  const text=String(raw||'').replace(/```(?:json)?/gi,'').trim();
-  if(!text)return null;
-  const start=text.indexOf('{');
-  const end=text.lastIndexOf('}');
-  if(start===-1||end<=start)return null;
-  const slice=text.slice(start,end+1);
-  const shape=(value)=>value&&typeof value==='object'&&!Array.isArray(value)?value:null;
-  try{return shape(JSON.parse(slice));}catch(error){}
-  try{
-    const repaired=slice.replace(/,\s*([}\]])/g,'$1').replace(/[\u201c\u201d]/g,'"');
+  const text = String(raw || '').replace(/```(?:json)?/gi, '').trim();
+  if (!text) return null;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  const slice = text.slice(start, end + 1);
+  const shape = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  try { return shape(JSON.parse(slice)); } catch (error) { /* try repair */ }
+  try {
+    const repaired = slice.replace(/,\s*([}\]])/g, '$1').replace(/[\u201c\u201d]/g, '"');
     return shape(JSON.parse(repaired));
-  }catch(error){return null;}
+  } catch (error) { return null; }
 }
-// Resolve one returned item text onto the shared option list. Exact text wins;
-// near-duplicates ("also X") and close phrasings are matched only against items
-// that are still unassigned so a row can never steal another row's item.
+
 function _batchOptionIndex(value, options, taken) {
-  const target=normText(value);
-  if(!target)return -1;
-  const blocked=taken||new Set();
-  const variants=[target];
-  const stripped=target.replace(/^(?:also|the)\s+/,'');
-  if(stripped&&stripped!==target)variants.push(stripped);
-  for(const variant of variants){
-    let exactSeen=false;
-    for(let index=0;index<options.length;index++){
-      if(normText(options[index])!==variant)continue;
-      exactSeen=true;
-      if(!blocked.has(index))return index;
+  const target = normText(value);
+  if (!target) return -1;
+  const blocked = taken || new Set();
+  const variants = [target];
+  const stripped = target.replace(/^(?:also|the)\s+/, '');
+  if (stripped && stripped !== target) variants.push(stripped);
+  for (const variant of variants) {
+    let exactSeen = false;
+    for (let index = 0; index < options.length; index++) {
+      if (normText(options[index]) !== variant) continue;
+      exactSeen = true;
+      if (!blocked.has(index)) return index;
     }
-    // The exact item exists but another row already claimed it: leave this row
-    // unanswered instead of silently matching a near-duplicate of it.
-    if(exactSeen)return -1;
+    if (exactSeen) return -1;
   }
-  for(const variant of variants){
-    for(let index=0;index<options.length;index++){
-      if(blocked.has(index))continue;
-      const candidate=normText(options[index]);
-      if(!candidate)continue;
-      if((candidate.startsWith(variant)||variant.startsWith(candidate))&&similarity(variant,candidate)>=0.6)return index;
+  for (const variant of variants) {
+    for (let index = 0; index < options.length; index++) {
+      if (blocked.has(index)) continue;
+      const candidate = normText(options[index]);
+      if (!candidate) continue;
+      if ((candidate.startsWith(variant) || variant.startsWith(candidate)) && similarity(variant, candidate) >= 0.6) return index;
     }
   }
-  let best=-1,bestScore=0;
-  for(let index=0;index<options.length;index++){
-    if(blocked.has(index))continue;
-    const score=similarity(target,normText(options[index]));
-    if(score>bestScore){best=index;bestScore=score;}
+  let best = -1;
+  let bestScore = 0;
+  for (let index = 0; index < options.length; index++) {
+    if (blocked.has(index)) continue;
+    const score = similarity(target, normText(options[index]));
+    if (score > bestScore) { best = index; bestScore = score; }
   }
-  const floor=Number(cfg('MATCHING_OPTION_FLOOR'))||0.45;
-  return best!==-1&&bestScore>=Math.max(floor,0.6)?best:-1;
+  const floor = Number(cfg('MATCHING_OPTION_FLOOR')) || 0.45;
+  return best !== -1 && bestScore >= Math.max(floor, 0.6) ? best : -1;
 }
+
 function _batchAssignments(parsed, rows, options) {
-  const allowed=new Set((rows||[]).map((row)=>String(row.rowIndex)));
-  const assignments={};
-  const taken=new Set();
-  let matched=0;
-  for(const [rawKey,rawValue] of Object.entries(parsed||{})){
-    const key=String(rawKey).trim().replace(/^row\s*/i,'').replace(/[^0-9]/g,'');
-    if(!allowed.has(key)||assignments[key]!==undefined)continue;
-    const index=_batchOptionIndex(typeof rawValue==='string'?rawValue:(rawValue&&rawValue.answer)||'',options,taken);
-    if(index===-1)continue;
-    assignments[key]=options[index];
+  const allowed = new Set((rows || []).map((row) => String(row.rowIndex)));
+  const assignments = {};
+  const taken = new Set();
+  let matched = 0;
+  for (const [rawKey, rawValue] of Object.entries(parsed || {})) {
+    const key = String(rawKey).trim().replace(/^row\s*/i, '').replace(/[^0-9]/g, '');
+    if (!allowed.has(key) || assignments[key] !== undefined) continue;
+    const index = _batchOptionIndex(typeof rawValue === 'string' ? rawValue : (rawValue && rawValue.answer) || '', options, taken);
+    if (index === -1) continue;
+    assignments[key] = options[index];
     taken.add(index);
     matched++;
   }
-  return{assignments,matched};
+  return { assignments, matched };
 }
 
 async function resolveMatchingBatch(rows, options, header) {
-  const entries=(Array.isArray(rows)?rows:[])
-    .filter((row)=>row&&Number.isFinite(Number(row.rowIndex)))
-    .map((row)=>({rowIndex:Number(row.rowIndex),subStatement:String(row.subStatement||'').replace(/\s+/g,' ').trim()}));
-  const items=(Array.isArray(options)?options:[])
-    .map((option)=>String(option||'').replace(/\s+/g,' ').trim())
+  const entries = (Array.isArray(rows) ? rows : [])
+    .filter((row) => row && Number.isFinite(Number(row.rowIndex)))
+    .map((row) => ({ rowIndex: Number(row.rowIndex), subStatement: String(row.subStatement || '').replace(/\s+/g, ' ').trim() }));
+  const items = (Array.isArray(options) ? options : [])
+    .map((option) => String(option || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
-  const empty={assignments:{},matched:0,source:''};
-  if(!entries.length||items.length<2)return empty;
+  const empty = { assignments: {}, matched: 0, source: '' };
+  if (!entries.length || items.length < 2) return empty;
 
-  let prompt=_matchingBatchPrompt(entries,items,String(header||'').replace(/\s+/g,' ').trim().slice(0,300));
-  if(cfg('WEB_SEARCH_ENABLED')){
-    try{
-      const context=await ollamaWebSearch(_searchQuery([header,...entries.map((row)=>row.subStatement),...items].join(' ')));
-      if(context)prompt+='\n\nNon-AI web search snippets (reference only):\n'+context.slice(0,2000);
-    }catch(error){console.warn('[providers] Matching batch web search failed:',error.message);}
+  let prompt = _matchingBatchPrompt(entries, items, String(header || '').replace(/\s+/g, ' ').trim().slice(0, 300));
+  if (cfg('WEB_SEARCH_ENABLED')) {
+    try {
+      const context = await ollamaWebSearch(_searchQuery([header, ...entries.map((row) => row.subStatement), ...items].join(' ')));
+      if (context) prompt += '\n\nNon-AI web search snippets (reference only):\n' + context.slice(0, 2000);
+    } catch (error) { console.warn('[providers] Matching batch web search failed:', error.message); }
   }
 
-  const wanted=entries.length;
-  let best=empty;
-  const accept=(raw,source)=>{
-    const parsed=_extractJsonObject(raw);
-    if(!parsed)return false;
-    const result=_batchAssignments(parsed,entries,items);
-    if(result.matched>best.matched)best={assignments:result.assignments,matched:result.matched,source};
-    return _matchingOk(result.matched,wanted);
+  const wanted = entries.length;
+  let best = empty;
+  const accept = (raw, source) => {
+    const parsed = _extractJsonObject(raw);
+    if (!parsed) return false;
+    const result = _batchAssignments(parsed, entries, items);
+    if (result.matched > best.matched) best = { assignments: result.assignments, matched: result.matched, source };
+    return _matchingOk(result.matched, wanted);
   };
-  const messageOf=(response)=>(response&&response.choices&&response.choices[0]?(response.choices[0].message||{}):{});
+  const messageOf = (response) => (response && response.choices && response.choices[0] ? (response.choices[0].message || {}) : {});
 
-  if(cfg('CUSTOM_API_KEY')&&!customCooling()){
-    try{
-      const response=await postCustomApi([{role:'user',content:prompt}],{maxTokens:400,temperature:0.1,timeout:30});
-      const message=messageOf(response);
-      if(accept(message.content||message.reasoning||'','custom'))return best;
-    }catch(error){}
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    try {
+      const response = await postCustomApi([{ role: 'user', content: prompt }], { maxTokens: 400, temperature: 0.1, timeout: 30 });
+      const message = messageOf(response);
+      if (accept(message.content || message.reasoning || '', 'custom')) return best;
+    } catch (error) { /* try next */ }
   }
-  if(cfg('GEMINI_API_KEY')){
-    const raw=await _askGeminiPrompt(prompt,{maxTokens:400,temperature:0.1,timeout:30});
-    if(accept(raw,'gemini'))return best;
+  if (cfg('GEMINI_API_KEY')) {
+    const raw = await _askGeminiPrompt(prompt, { maxTokens: 400, temperature: 0.1, timeout: 30 });
+    if (accept(raw, 'gemini')) return best;
   }
-  if(cfg('OPENROUTER_API_KEY')&&!orCooling()){
-    try{
-      const response=await postOpenRouter([{role:'user',content:prompt}],{maxTokens:400,temperature:0.1,timeout:30});
-      const message=messageOf(response);
-      if(accept(message.content||message.reasoning||'','openrouter'))return best;
-    }catch(error){}
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    try {
+      const response = await postOpenRouter([{ role: 'user', content: prompt }], { maxTokens: 400, temperature: 0.1, timeout: 30 });
+      const message = messageOf(response);
+      if (accept(message.content || message.reasoning || '', 'openrouter')) return best;
+    } catch (error) { /* try next */ }
   }
-  try{
-    const response=await postOllama(prompt,{numPredict:500,temperature:0.1,timeout:45});
-    if(response&&response.response)accept(response.response,'ollama');
-  }catch(error){}
-  return best.matched?best:empty;
+  try {
+    const response = await postOllama(prompt, { numPredict: 500, temperature: 0.1, timeout: 45 });
+    if (response && response.response) accept(response.response, 'ollama');
+  } catch (error) { /* offline */ }
+  return best.matched ? best : empty;
 }
 
-async function askAiMatching(header,statements,options,n,locked,used){used=new Set(used||[]);const skip=new Set((locked||[]).map(x=>x[0]));const remaining=n-skip.size;let prompt=_matchingPrompt(header,statements,options,n,locked);if(cfg('WEB_SEARCH_ENABLED')){try{const context=await ollamaWebSearch(_searchQuery([header,...statements,...options].join(' ')));if(context)prompt+='\n\nNon-AI web search snippets (reference only):\n'+context.slice(0,2000);}catch(error){console.warn('[providers] Matching web search failed:',error.message);}}let bestIdxs=null,bestMatched=0;const consider=(idxs,matched)=>{if(matched>bestMatched){bestIdxs=idxs;bestMatched=matched;}};if(cfg('CUSTOM_API_KEY')&&!customCooling()){try{const r=await postCustomApi([{role:'user',content:prompt}],{maxTokens:260,temperature:0.1,timeout:30});if(r){const msg=r.choices?.[0]?.message||{};const raw=((msg.content||msg.reasoning||'')).trim();const result=_parseMapping(raw,options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}catch(e){}}if(cfg('GEMINI_API_KEY')){const raw=await _askGeminiPrompt(prompt,{maxTokens:260,temperature:0.1,timeout:30});if(raw){const result=_parseMapping(raw,options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){try{const r=await postOpenRouter([{role:'user',content:prompt}],{maxTokens:260,temperature:0.1,timeout:30});if(r){const msg=r.choices?.[0]?.message||{};const raw=((msg.content||msg.reasoning||'')).trim();const result=_parseMapping(raw,options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}catch(e){}}try{const r=await postOllama(prompt,{numPredict:300,temperature:0.1,timeout:45});if(r&&r.response){const result=_parseMapping(r.response.trim(),options,n,skip,used);if(_matchingOk(result.matched,remaining))return result;consider(result.idxs,result.matched);}}catch(e){}if(bestIdxs!==null&&bestMatched>0)return{idxs:bestIdxs,matched:bestMatched};return{idxs:new Array(n).fill(-1),matched:0};}
-async function askAi(q,o,im){im=im||[];const w=await getWrongAnswers(q);const b=new Set(w.map(x=>normText(x)));const isWrong=(option)=>{const on=normText(option);if(!on)return false;if(b.has(on))return true;for(const x of b)if(similarity(on,x)>=0.9)return true;return false;};const local=await localBankOptionMatches(q,o);const localOk=local.find((match)=>!isWrong(o[match.index]));if(localOk)return localOk.index;const bq=_isBoolQuestion(o);const vp=[];for(let i=0;i<o.length;i++){const on=normText(o[i]);if(!(b.has(on)||[...b].some(x=>similarity(on,x)>=0.9)))vp.push({origIdx:i,opt:o[i]});}if(!vp.length)for(let i=0;i<o.length;i++)vp.push({origIdx:i,opt:o[i]});if(vp.length===1){console.log('Only 1 untried option');return vp[0].origIdx;}const fo=vp.map(p=>p.opt);if(cfg('ANSWER_KEY_ENABLED')){const ki=await keyIndex(q,fo,cfg('BOOL_QUESTION_MIN_SCORE'));if(ki!==-1)return vp[ki].origIdx;}if(cfg('WEB_SEARCH_ENABLED')){const wi=await askWeb(q,fo,vp.map(p=>p.origIdx));if(wi!==-1)return vp[wi].origIdx;}if(bq){const i=await askBoolClaim(q,fo);if(i!==-1)return vp[i].origIdx;}if(im.length){const i=await askVision(q,fo,im);if(i!==-1)return vp[i].origIdx;}let eq=q;if(cfg('ANSWER_KEY_ENABLED')){const h=await hintText(q);if(h)eq+='\n\n'+h;}const exNote=_excludedNote(w);if(exNote)eq+=' '+exNote;if(cfg('CUSTOM_API_KEY')&&!customCooling()){const r=await askCustomApi(eq,fo,null,vp.map(p=>p.origIdx));if(r!==-1)return vp[r].origIdx;}if(cfg('GEMINI_API_KEY')){const r=await askGemini(eq,fo,null,vp.map(p=>p.origIdx));if(r!==-1)return vp[r].origIdx;}if(cfg('OPENROUTER_API_KEY')&&!_orWebDisabled&&!orCooling()){const web=await askOpenRouterWeb(eq,fo,vp.map(p=>p.origIdx));if(web!==-1)return vp[web].origIdx;}if(cfg('OPENROUTER_API_KEY')&&!orCooling()){const r=await askOpenRouter(eq,fo,null,vp.map(p=>p.origIdx));if(r!==-1)return vp[r].origIdx;}try{const r=await askOllama(eq,fo,null,vp.map(p=>p.origIdx));if(r!==-1)return vp[r].origIdx;}catch(e){}return -1;}
+// ── Main MCQ waterfall ──────────────────────────────────────────────────────
+async function askAi(q, o, im) {
+  im = im || [];
+  const w = await getWrongAnswers(q);
+  const b = new Set(w.map((x) => normText(x)));
+  const isWrong = (option) => {
+    const on = normText(option);
+    if (!on) return false;
+    if (b.has(on)) return true;
+    for (const x of b) if (similarity(on, x) >= 0.9) return true;
+    return false;
+  };
+  const local = await localBankOptionMatches(q, o);
+  const localOk = local.find((match) => !isWrong(o[match.index]));
+  if (localOk) return localOk.index;
 
+  const bq = _isBoolQuestion(o);
+  const vp = [];
+  for (let i = 0; i < o.length; i++) {
+    const on = normText(o[i]);
+    if (!(b.has(on) || [...b].some((x) => similarity(on, x) >= 0.9))) vp.push({ origIdx: i, opt: o[i] });
+  }
+  if (!vp.length) for (let i = 0; i < o.length; i++) vp.push({ origIdx: i, opt: o[i] });
+  if (vp.length === 1) return vp[0].origIdx;
+
+  const fo = vp.map((p) => p.opt);
+  const oi = vp.map((p) => p.origIdx);
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    const ki = await keyIndex(q, fo, bq ? cfg('BOOL_QUESTION_MIN_SCORE') : cfg('ANSWER_KEY_MIN_SCORE'));
+    if (ki !== -1) return vp[ki].origIdx;
+  }
+  if (cfg('WEB_SEARCH_ENABLED')) {
+    const wi = await askWeb(q, fo, oi);
+    if (wi !== -1) return vp[wi].origIdx;
+  }
+  if (bq) {
+    const i = await askBoolClaim(q, fo);
+    if (i !== -1) return vp[i].origIdx;
+  }
+  if (im.length) {
+    const i = await askVision(q, fo, im);
+    if (i !== -1) return vp[i].origIdx;
+  }
+  let eq = q;
+  if (cfg('ANSWER_KEY_ENABLED')) {
+    const h = await hintText(q);
+    if (h) eq += '\n\n' + h;
+  }
+  const exNote = _excludedNote(w);
+  if (exNote) eq += ' ' + exNote;
+
+  if (cfg('CUSTOM_API_KEY') && !customCooling()) {
+    const r = await askCustomApi(eq, fo, null, oi);
+    if (r !== -1) return vp[r].origIdx;
+  }
+  if (cfg('GEMINI_API_KEY')) {
+    const r = await askGemini(eq, fo, null, oi);
+    if (r !== -1) return vp[r].origIdx;
+  }
+  if (cfg('OPENROUTER_WEB_ENABLED') && cfg('OPENROUTER_API_KEY') && !_orWebDisabled && !orCooling()) {
+    const web = await askOpenRouterWeb(eq, fo, oi);
+    if (web !== -1) return vp[web].origIdx;
+  }
+  if (cfg('OPENROUTER_API_KEY') && !orCooling()) {
+    const r = await askOpenRouter(eq, fo, null, oi);
+    if (r !== -1) return vp[r].origIdx;
+  }
+  try {
+    const r = await askOllama(eq, fo, null, oi);
+    if (r !== -1) return vp[r].origIdx;
+  } catch (e) { /* offline */ }
+  return -1;
+}
 
 
 ;
@@ -3424,10 +4733,28 @@ function startAutoHarvest() {
 }
 
 function addResultEntry(q, t, a, s) {
-  const b = _hudShadow?.getElementById('hud-body'); if (!b) return;
-  const e = document.createElement('div'); e.className='hud-entry';
-  e.innerHTML = '<div class="q-text">'+esc(q.slice(0,80))+'</div><div class="q-result"><span class="q-tier">'+esc(t)+'</span><span class="q-answer">'+esc(a)+'</span><span class="q-score">'+(s||'')+'</span></div>';
-  b.appendChild(e); b.scrollTop = b.scrollHeight;
+  const b = _hudShadow?.getElementById('hud-body');
+  if (!b) return;
+  const entry = document.createElement('div');
+  entry.className = 'hud-entry';
+  const qDiv = document.createElement('div');
+  qDiv.className = 'q-text';
+  qDiv.textContent = String(q || '').slice(0, 80);
+  const resDiv = document.createElement('div');
+  resDiv.className = 'q-result';
+  const tierSpan = document.createElement('span');
+  tierSpan.className = 'q-tier';
+  tierSpan.textContent = String(t || '');
+  const ansSpan = document.createElement('span');
+  ansSpan.className = 'q-answer';
+  ansSpan.textContent = String(a || '');
+  const scoreSpan = document.createElement('span');
+  scoreSpan.className = 'q-score';
+  scoreSpan.textContent = String(s || '');
+  resDiv.append(tierSpan, ansSpan, scoreSpan);
+  entry.append(qDiv, resDiv);
+  b.appendChild(entry);
+  b.scrollTop = b.scrollHeight;
 }
 
 function setHUDStatus(s) { const e = _hudShadow?.getElementById('hud-status'); if (e) { e.textContent = s; e.className = s; } }
@@ -3880,10 +5207,91 @@ function extractQuestionData() {
   return null;
 }
 
+function isSummaryPage() {
+  return typeof location !== 'undefined' && location.pathname.includes('/mod/quiz/summary.php');
+}
+
+function isQuizViewPage() {
+  return typeof location !== 'undefined' && location.pathname.includes('/mod/quiz/view.php');
+}
+
+// Extract up to MAX_QUESTION_IMAGES content images from a `.que` block as
+// `{ base64, mimeType }` objects for Vision AI providers. Runs lazily only
+// when local-bank lookup misses so fast paths pay zero network overhead.
+async function extractQuestionImages(container) {
+  if (!cfg('VISION_ENABLED') || !container || !container.querySelectorAll) return [];
+  const limit = Math.max(0, Number(cfg('MAX_QUESTION_IMAGES')) || 2);
+  if (limit === 0) return [];
+
+  const scope = container.querySelector('.qtext') || container.querySelector('.formulation') || container;
+  const imgNodes = Array.from(scope.querySelectorAll('img')).filter((img) => {
+    if (!img) return false;
+    const cls = String(img.className || '').toLowerCase();
+    if (/\b(icon|feedbackimage|smallicon|questionflagimage)\b/.test(cls)) return false;
+    if (img.closest('.info, .outcome, .feedback, .questionflag')) return false;
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    if ((w > 0 && w < 24) || (h > 0 && h < 24)) return false;
+    const src = img.getAttribute('src') || img.src || '';
+    return Boolean(src) && !src.startsWith('data:image/gif;base64,R0lGOD');
+  });
+
+  const results = [];
+  const seen = new Set();
+  for (const img of imgNodes) {
+    if (results.length >= limit) break;
+    const rawSrc = img.src || img.getAttribute('src') || '';
+    if (!rawSrc || seen.has(rawSrc)) continue;
+    seen.add(rawSrc);
+
+    const dataMatch = rawSrc.match(/^data:(image\/[^;]+);base64,(.+)$/i);
+    if (dataMatch) {
+      results.push({ mimeType: dataMatch[1], base64: dataMatch[2] });
+      continue;
+    }
+
+    // Try fast in-page canvas capture first for already-loaded same-origin images.
+    let captured = null;
+    try {
+      if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1024;
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+          const m = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/i);
+          if (m) captured = { mimeType: m[1], base64: m[2] };
+        }
+      }
+    } catch (error) { /* tainted cross-origin canvas: fall back to background fetch */ }
+
+    if (captured) {
+      results.push(captured);
+      continue;
+    }
+
+    try {
+      const absUrl = new URL(rawSrc, location.href).href;
+      const fetched = await bgFetch('fetchImageBase64', { url: absUrl, timeout: 10000 }, 13000);
+      if (fetched && fetched.base64) {
+        results.push({ mimeType: fetched.mimeType || 'image/png', base64: fetched.base64 });
+      }
+    } catch (error) {
+      logHUD('warn', 'Vision image fetch skipped: ' + error.message);
+    }
+  }
+  return results;
+}
+
 function waitForManual(elements, kind, question = '', options = [], statements = []) {
   logHUD('warn', 'No AI answer (check API key/credits or select manually)');
   return new Promise((resolve) => {
-    const deadline = Date.now() + 300000;
+    const timeoutSec = Number(cfg('MANUAL_TIMEOUT')) || 300;
+    const deadline = Date.now() + Math.max(10, timeoutSec) * 1000;
     let checkSelection = '';
     let checkChangedAt = 0;
     const saveManualAnswers = async () => {
@@ -5099,26 +6507,111 @@ async function selectAnswer(selectEl, optionText) {
   } catch(e) { return false; }
 }
 
-function typeAnswer(element, text) {
+async function typeAnswer(element, text) {
   try {
+    const value = String(text || '');
+    const delayMs = Math.max(0, Math.min(Number(cfg('TYPE_DELAY_MS')) || 0, 50));
     element.focus();
-    element.value = text;
-    element.dispatchEvent(new Event('input', {bubbles:true}));
-    element.dispatchEvent(new Event('change', {bubbles:true}));
-    element.dispatchEvent(new Event('blur', {bubbles:true}));
+    if (delayMs > 0 && value.length <= 80) {
+      element.value = '';
+      for (const ch of value) {
+        if (runCancelled()) return false;
+        element.value += ch;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    } else {
+      element.value = value;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
     return true;
-  } catch(e) { return false; }
+  } catch (e) { return false; }
 }
 
 async function submitAttempt() {
-  const sel = ['#id_submitbutton','input[value="Submit all and finish"]','button[name="submitbutton"]'];
-  for (const s of sel) {
-    const btn = document.querySelector(s);
-    if (btn) { btn.click(); return true; }
+  const findSubmitButton = () => {
+    const selectors = [
+      '#id_submitbutton',
+      'input[value="Submit all and finish"]',
+      'button[name="submitbutton"]',
+      '.submitbtns button.btn-primary',
+      'form[action*="processattempt.php"] button[type="submit"]',
+      'form[action*="processattempt.php"] input[type="submit"]',
+    ];
+    for (const s of selectors) {
+      const btn = document.querySelector(s);
+      if (btn && !btn.disabled) return btn;
+    }
+    for (const btn of document.querySelectorAll('button, input[type="submit"]')) {
+      const label = String(btn.textContent || btn.value || '').trim().toLowerCase();
+      if (!btn.disabled && label.includes('submit all and finish')) return btn;
+    }
+    return null;
+  };
+
+  const findConfirmButton = () => {
+    const selectors = [
+      '.modal.show button[data-action="save"]',
+      '.modal.show .modal-footer .btn-primary',
+      '.moodle-dialogue-wrap .confirmation-buttons input[value*="Submit" i]',
+      '.moodle-dialogue-wrap .confirmation-buttons .btn-primary',
+      '.confirmation-dialogue input[type="button"].btn-primary',
+      '[role="dialog"] button.btn-primary',
+    ];
+    for (const s of selectors) {
+      const btn = document.querySelector(s);
+      if (btn && !btn.disabled && btn.offsetParent !== null) return btn;
+    }
+    for (const btn of document.querySelectorAll('.modal button, [role="dialog"] button, .moodle-dialogue-wrap input[type="button"]')) {
+      const label = String(btn.textContent || btn.value || '').trim().toLowerCase();
+      if (!btn.disabled && btn.offsetParent !== null && label.includes('submit all and finish')) return btn;
+    }
+    return null;
+  };
+
+  const trigger = findSubmitButton();
+  if (!trigger) return false;
+  trigger.click();
+  const waitMs = Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900);
+  await new Promise((r) => setTimeout(r, waitMs));
+  const confirm = findConfirmButton();
+  if (confirm) {
+    confirm.click();
+    logHUD('success', 'Confirmed Submit all and finish');
   }
-  const buttons = document.querySelectorAll('button');
-  for (const btn of buttons) { if (btn.textContent.trim().toLowerCase().includes('submit all and finish')) { btn.click(); return true; } }
-  return false;
+  return true;
+}
+
+const MAX_AUTO_REATTEMPTS_PER_SESSION = 10;
+
+async function tryAutoReattempt() {
+  if (!cfg('AUTO_REATTEMPT') || !isQuizViewPage()) return false;
+  const quizId = new URLSearchParams(location.search || '').get('id') || location.pathname;
+  const countKey = 'qb_reattempt_count_' + quizId;
+  let attempts = 0;
+  try { attempts = Number(sessionStorage.getItem(countKey)) || 0; } catch (error) { attempts = 0; }
+  if (attempts >= MAX_AUTO_REATTEMPTS_PER_SESSION) {
+    logHUD('warn', `Auto-reattempt cap (${MAX_AUTO_REATTEMPTS_PER_SESSION}) reached for this quiz.`);
+    return false;
+  }
+
+  const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], a.btn'));
+  const target = buttons.find((el) => {
+    if (el.disabled) return false;
+    const label = String(el.textContent || el.value || '').trim().toLowerCase();
+    return /\bre-?attempt quiz\b|\battempt quiz now\b|\bcontinue the last attempt\b|\bcontinue your attempt\b/.test(label);
+  });
+  if (!target) return false;
+
+  try { sessionStorage.setItem(countKey, String(attempts + 1)); } catch (error) { /* ignore */ }
+  logHUD('info', `Auto-reattempting quiz (${attempts + 1}/${MAX_AUTO_REATTEMPTS_PER_SESSION})...`);
+  target.click();
+  await new Promise((r) => setTimeout(r, Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900)));
+  const startConfirm = document.querySelector('#id_submitbutton, .modal.show button[data-action="save"], .modal.show .btn-primary');
+  if (startConfirm && !startConfirm.disabled) startConfirm.click();
+  return true;
 }
 // Build a predicate that flags options matching a stored (known-wrong) answer.
 async function buildWrongOptionFilter(qText, options, wrongList) {
@@ -5308,7 +6801,7 @@ async function handleQuestion(data) {
       if (!ok) logHUD('warn','Manual text timeout');
       return ok;
     }
-    typeAnswer(elements[0], ans);
+    await typeAnswer(elements[0], ans);
     logHUD('success', 'Typed: '+ans.slice(0,60));
     return true;
   }
@@ -5339,7 +6832,10 @@ async function handleQuestion(data) {
     return true;
   }
   const validOptions = validIndices.map((index) => options[index]);
-  let idx = await askAi(text, validOptions, images);
+  const qContainer = elements[0] && elements[0].closest ? elements[0].closest('div.que') : null;
+  const resolvedImages = (images && images.length) ? images : await extractQuestionImages(qContainer);
+  if (runCancelled()) return false;
+  let idx = await askAi(text, validOptions, resolvedImages);
   if (idx >= 0 && idx < validIndices.length) idx = validIndices[idx];
   else idx = -1;
   if (runCancelled()) return false; // Stop pressed while the AI was thinking
@@ -5414,16 +6910,49 @@ async function startLoop() {
     let emptyScans = 0;
     let stalls = 0;
     let reviewPageHandled = '';
+    let submitTries = 0;
+    let reattemptHandled = '';
     const startTime = Date.now();
-    const maxRun = 8 * 60 * 60 * 1000;
+    const maxRunHours = Math.max(0.25, Number(cfg('MAX_RUN_HOURS')) || 8);
+    const maxRun = maxRunHours * 60 * 60 * 1000;
 
     while (!_stopRequested && token === _runToken) {
       if (Date.now() - startTime > maxRun) {
-        logHUD('error', '8-hour max runtime reached');
+        logHUD('error', `${maxRunHours}-hour max runtime reached`);
         break;
       }
       await new Promise(r => setTimeout(r, cfg('SCAN_INTERVAL')));
       if (token !== _runToken) break; // Stop was pressed while we waited
+
+      // Summary page: automatically submit attempt when AUTO_SUBMIT is enabled.
+      if (isSummaryPage()) {
+        if (cfg('AUTO_SUBMIT')) {
+          const maxTries = Math.max(1, Number(cfg('MAX_SUBMIT_TRIES')) || 4);
+          if (submitTries < maxTries) {
+            submitTries += 1;
+            logHUD('info', `Summary page detected — auto-submitting (${submitTries}/${maxTries})...`);
+            const submitted = await submitAttempt();
+            if (submitted) {
+              await new Promise(r => setTimeout(r, Math.max(300, Number(cfg('NAV_WAIT_MS')) || 900)));
+              continue;
+            }
+          }
+        }
+        continue;
+      }
+      submitTries = 0;
+
+      // Quiz view page: optionally kick off a re-attempt when AUTO_REATTEMPT is enabled.
+      if (isQuizViewPage()) {
+        const viewId = typeof location === 'undefined' ? 'view' : location.href;
+        if (cfg('AUTO_REATTEMPT') && viewId !== reattemptHandled) {
+          reattemptHandled = viewId;
+          await tryAutoReattempt();
+        }
+        continue;
+      }
+      reattemptHandled = '';
+
       if (isReviwPg()) {
         const pageId = typeof location === 'undefined' ? 'review' : location.href;
         if (pageId !== reviewPageHandled) {
@@ -5461,6 +6990,8 @@ async function startLoop() {
               logHUD('info', 'All answered — advancing');
               const ok = cfg('AUTO_CLICK_NEXT') ? await clickNext() : false;
               if (!ok) await clickFinish();
+              const pauseNext = Number(cfg('PAUSE_AFTER_NEXT')) || 0;
+              if (pauseNext > 0) await new Promise(r => setTimeout(r, pauseNext));
             }
             handledQuestions.clear();
             attemptsByQuestionId.clear();
@@ -5559,1160 +7090,17 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 }
 
 
-  window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
-  window.__qbTmReloadConfig = loadConfig;
-  const qbTmMoodleGearTimer = setInterval(() => {
-    try {
-      if (typeof _hudShadow !== 'undefined' && _hudShadow) {
-        qbTmAddGearButton(_hudShadow.getElementById('hud-header'));
-        clearInterval(qbTmMoodleGearTimer);
-      }
-    } catch (error) { console.warn('[Quiz Bot] Could not add settings gear:', error); }
-  }, 250);
-  })();
-} else {
-  (function () {
-
-;
-// ─────────────────────────────────────────────────────────────────────────────
-//  CONFIG — defaults + chrome.storage.sync overlay
-//  Ported verbatim from bot.py + answerkey.py environment variables.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const DEFAULTS = Object.freeze({
-  // Moodle
-  MOODLE_URL: 'https://amaes.com',
-
-  // FreeLLMAPI / Custom OpenAI-compatible endpoint
-  CUSTOM_API_BASE_URL: 'https://api.freellmapi.com/v1',
-  CUSTOM_API_KEY: '',
-  CUSTOM_MODEL: 'auto',
-
-  // GitHub Question Bank
-  GITHUB_BANK_OWNER: '',
-  GITHUB_BANK_REPO: '',
-  GITHUB_BANK_PATH: 'bank.json',
-  GITHUB_SYNC_TOKEN: '',
-  // Legacy alias. The options page writes `GITHUB_SYNC_TOKEN`; the sync code
-  // accepts either (the primary key wins) so older saved settings keep working.
-  GITHUB_BANK_TOKEN: '',
-
-  // OpenRouter
-  OPENROUTER_API_KEY: '',
-  OPENROUTER_MODEL: 'deepseek/deepseek-v4.1-flash',
-  OPENROUTER_VISION_MODEL: '',
-  OPENROUTER_COOLDOWN: 180,
-  OPENROUTER_API_URL: 'https://openrouter.ai/api/v1/chat/completions',
-  OPENROUTER_WEB_ENABLED: false, // web plugin is billed per search; off = much cheaper
-
-  // Gemini (`GEMINI_API_KEY` accepts comma/newline separated backup keys)
-  GEMINI_API_KEY: '',
-  GEMINI_MODEL: 'gemini-3.8-flash',
-  GEMINI_KEY_COOLDOWN: 180,
-
-  // Ollama
-  OLLAMA_URL: 'http://127.0.0.1:11434',
-  OLLAMA_MODEL: 'qwen2.5:7b',
-  OLLAMA_VISION_MODEL: '',
-  OLLAMA_API_KEY: '',
-  OLLAMA_NUM_CTX: 4096,
-  OLLAMA_KEEP_ALIVE: '10m',
-  OLLAMA_TIMEOUT_MS: 60000,
-
-  // Behaviour
-  PAUSE_AFTER_ANSWER: 300,
-  PAUSE_AFTER_NEXT: 500,
-  AUTO_CLICK_NEXT: true,
-  AUTO_SUBMIT: true,
-  SCAN_INTERVAL: 300,
-  NAV_WAIT_MS: 900,
-  MAX_SUBMIT_TRIES: 4,
-  AUTO_REATTEMPT: false,
-
-  // Short-answer
-  SHORT_ANSWER_ENABLED: true,
-  TYPE_DELAY_MS: 8,
-  MAX_TEXT_RETRIES: 2,
-  TYPE_ON_FAILURE: true,
-
-  // Multi-answer
-  MULTI_ENABLED: true,
-  MULTI_MAX_PICKS: 4,
-
-  // Matching
-  MATCHING_ENABLED: true,
-  MATCHING_MIN_MATCHED: 0.6,
-  MATCHING_OPTION_FLOOR: 0.45,
-
-  // True/False
-  BOOL_QUESTION_MIN_SCORE: 0.55,
-
-  // Vision
-  VISION_ENABLED: true,
-  MAX_QUESTION_IMAGES: 2,
-
-  // Answer key (amauoed.com)
-  ANSWER_KEY_ENABLED: true,
-  ANSWER_KEY_TIMEOUT: 4,
-  ANSWER_KEY_MIN_SCORE: 0.72,
-  ANSWER_KEY_TEXT_MIN_SCORE: 0.82,
-  ANSWER_KEY_MATCH_MIN_SCORE: 0.8,
-  ANSWER_KEY_MAX_HITS: 4,
-
-  // Web search
-  WEB_SEARCH_ENABLED: true,
-  WEB_SEARCH_MAX_RESULTS: 3,
-  WEB_SEARCH_DOMAINS: 'amauoed.com,studocu.com,coursehero.com,docsity.com',
-
-  // Limits
-  MAX_Q_CHARS: 1200,
-  WEB_Q_CHARS: 380,
-  MAX_RUN_HOURS: 8,
-  MANUAL_TIMEOUT: 300,
-
-  // Answer key cache
-  CACHE_TTL: 0,
-  CACHE_MAX: 50000,
-
-  // Extension specific
-  BOT_ENABLED: true,
-});
-
-const PLACEHOLDER_RE = /answer\s*\d+\s*[\.\)]?\s*question\s*\d+/gi;
-
-// In-memory merged config.
-let _merged = { ...DEFAULTS };
-
-/**
- * Load settings from chrome.storage.sync and merge with defaults.
- * Called once at startup by background.js and content.js.
- */
-async function loadConfig() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(null, (items) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[config] storage.sync error:', chrome.runtime.lastError.message);
-        resolve({ ...DEFAULTS });
-        return { ...DEFAULTS };
-      }
-      _merged = { ...DEFAULTS };
-      for (const [k, v] of Object.entries(items)) {
-        if (k in DEFAULTS && v !== undefined && v !== null) {
-          _merged[k] = v;
-        }
-      }
-      const geminiModel = String(_merged.GEMINI_MODEL || '').trim();
-      if (!geminiModel || geminiModel === 'gemini-2.5-flash') {
-        _merged.GEMINI_MODEL = 'gemini-3.8-flash';
-        chrome.storage.sync.set({ GEMINI_MODEL: _merged.GEMINI_MODEL });
-      }
-      const ollamaUrl = String(_merged.OLLAMA_URL || '').trim();
-      const ollamaModel = String(_merged.OLLAMA_MODEL || '').trim();
-      const ollamaUpdates = {};
-      if (!ollamaUrl) {
-        _merged.OLLAMA_URL = DEFAULTS.OLLAMA_URL;
-        ollamaUpdates.OLLAMA_URL = _merged.OLLAMA_URL;
-      }
-      if (!ollamaModel || ollamaModel === 'gemma4:e2b') {
-        _merged.OLLAMA_MODEL = DEFAULTS.OLLAMA_MODEL;
-        ollamaUpdates.OLLAMA_MODEL = _merged.OLLAMA_MODEL;
-      }
-      if (Object.keys(ollamaUpdates).length) chrome.storage.sync.set(ollamaUpdates);
-      resolve(_merged);
-    });
-  });
-}
-
-/**
- * Save a set of config keys to storage.sync.
- */
-async function saveConfig(updates) {
-  return new Promise((resolve) => {
-    const filtered = {};
-    for (const [k, v] of Object.entries(updates)) {
-      if (k in DEFAULTS) {
-        filtered[k] = v;
-        _merged[k] = v;
-      }
-    }
-    chrome.storage.sync.set(filtered, () => {
-      resolve();
-    });
-  });
-}
-
-/**
- * Get a single config value (synchronous, from in-memory copy).
- */
-function cfg(key) {
-  return _merged[key];
-}
-
-/**
- * Get all config.
- */
-function getAllConfig() {
-  return { ..._merged };
-}
-
-/**
- * Ollama timeout in ms: accepts seconds (< 1000) or ms, never below 30 s.
- */
-function ollamaTimeoutMs(value) {
-  let ms = Number(value) || Number(_merged.OLLAMA_TIMEOUT_MS) || 60000;
-  if (ms < 1000) ms *= 1000;
-  return Math.max(ms, 30000);
-}
-
-;
-// ─────────────────────────────────────────────────────────────────────────────
-//  STORAGE — promise-mutex serialized read-modify-write cycle
-//  chrome.storage.local for answer key cache, wrong cache, search cache.
-//  In-memory mirror for hot-path lookups.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── Promise-mutex serialiser ────────────────────────────────────────────────
-let _queue = Promise.resolve();
-
-/**
- * Serialise a read-modify-write cycle end to end.
- * fn receives the current data dict, must return the new data dict (or same).
- */
-async function mutex(fn) {
-  _queue = _queue.then(fn, fn);
-  return _queue;
-}
-
-// ── In-memory mirrors ───────────────────────────────────────────────────────
-let _answerKeyMem = {};
-let _wrongMem = {};
-let _searchMem = {};
-
-const STORAGE_KEYS = {
-  ANSWER_KEY: 'answerkey_cache',
-  WRONG: 'wrong_cache',
-  SEARCH: 'search_cache',
-};
-
-/**
- * Validate shape of loaded data; drop malformed entries.
- */
-function validateAnswerKey(data) {
-  if (typeof data !== 'object' || data === null) return {};
-  const out = {};
-  for (const [rawKey, value] of Object.entries(data)) {
-    const key = normText(rawKey);
-    if (!key) continue;
-    const entry = normalizeAnswerEntry(rawKey, value);
-    if (!entry) continue;
-    if (!out[key]) {
-      out[key] = entry;
-      continue;
-    }
-    const hits = out[key][1];
-    for (const hit of entry[1]) {
-      if (!hits.some((existing) =>
-        normText(existing.question) === normText(hit.question) &&
-        normText(existing.answer) === normText(hit.answer)
-      )) hits.push(hit);
-    }
-    out[key][0] = Math.max(out[key][0], entry[0]);
-  }
-  return out;
-}
-
-function normalizeAnswerEntry(question, value) {
-  let timestamp = Date.now() / 1000;
-  let rawHits;
-  if (Array.isArray(value) && value.length === 2 &&
-      typeof value[0] === 'number' && Array.isArray(value[1])) {
-    timestamp = value[0];
-    rawHits = value[1];
-  } else if (typeof value === 'string' || (value && typeof value === 'object')) {
-    rawHits = [value];
-  } else {
-    return null;
-  }
-
-  const hits = [];
-  for (const rawHit of rawHits) {
-    const hit = typeof rawHit === 'string' ? { answer: rawHit } : rawHit;
-    if (!hit || typeof hit.answer !== 'string' || !hit.answer.trim()) continue;
-    const normalized = {
-      question: typeof hit.question === 'string' && hit.question.trim()
-        ? hit.question.trim()
-        : question,
-      answer: hit.answer.trim(),
-      course: typeof hit.course === 'string' ? hit.course : 'imported',
-      verified: hit.verified === true,
-    };
-    // Keep an explicit "known wrong" marker so it can be purged on the next write.
-    if (hit.wrong === true) normalized.wrong = true;
-    hits.push(normalized);
-  }
-  return [timestamp, hits];
-}
-
-function validateWrong(data) {
-  if (typeof data !== 'object' || data === null) return {};
-  const out = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (Array.isArray(v)) {
-      out[k] = v.filter((x) => typeof x === 'string');
-    }
-  }
-  return out;
-}
-
-function validateSearch(data) {
-  if (typeof data !== 'object' || data === null) return {};
-  const out = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (typeof v === 'string') out[k] = v;
-  }
-  return out;
-}
-
-// ── Load all caches into memory on first access ────────────────────────────
-let _loaded = false;
-let _loadPromise = null;
-
-function ensureLoaded() {
-  if (!_loadPromise) {
-    _loadPromise = (async () => {
-      await loadConfig();
-      const result = await chrome.storage.local.get([
-        STORAGE_KEYS.ANSWER_KEY,
-        STORAGE_KEYS.WRONG,
-        STORAGE_KEYS.SEARCH,
-      ]);
-      _answerKeyMem = validateAnswerKey(result[STORAGE_KEYS.ANSWER_KEY] || {});
-      _wrongMem = validateWrong(result[STORAGE_KEYS.WRONG] || {});
-      _searchMem = validateSearch(result[STORAGE_KEYS.SEARCH] || {});
-      _loaded = true;
+      const qbTmMoodleGearTimer = setInterval(() => {
+        try {
+          if (typeof _hudShadow !== 'undefined' && _hudShadow) {
+            qbTmAddGearButton(_hudShadow.getElementById('hud-header'));
+            clearInterval(qbTmMoodleGearTimer);
+          }
+        } catch (error) { console.warn('[Quiz Bot] Could not add settings gear:', error); }
+      }, 250);
     })();
-  }
-  return _loadPromise;
-}
-
-// ── Dirty tracking: several contexts (worker, tabs, options) share storage, so
-//    a flush merges only the keys this context changed instead of overwriting.
-const _dirty = { ak: new Set(), wrong: new Set(), search: new Set() };
-const _deleted = { ak: new Set(), wrong: new Set(), search: new Set() };
-
-function markKey(kind, key, removed = false) {
-  if (!key) return;
-  (removed ? _deleted : _dirty)[kind].add(key);
-  (removed ? _dirty : _deleted)[kind].delete(key);
-}
-
-function overlayPending(kind, base, mem) {
-  const out = base && typeof base === 'object' ? { ...base } : {};
-  for (const key of _dirty[kind]) if (key in mem) out[key] = mem[key];
-  for (const key of _deleted[kind]) delete out[key];
-  return out;
-}
-
-// Keep the in-memory mirror in sync with writes from other contexts.
-if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !_loaded) return;
-    if (changes[STORAGE_KEYS.ANSWER_KEY]) {
-      _answerKeyMem = overlayPending('ak', changes[STORAGE_KEYS.ANSWER_KEY].newValue, _answerKeyMem);
-    }
-    if (changes[STORAGE_KEYS.WRONG]) {
-      _wrongMem = overlayPending('wrong', changes[STORAGE_KEYS.WRONG].newValue, _wrongMem);
-    }
-    if (changes[STORAGE_KEYS.SEARCH]) {
-      _searchMem = overlayPending('search', changes[STORAGE_KEYS.SEARCH].newValue, _searchMem);
-    }
-  });
-}
-
-// ── Debounced cache flush ────────────────────────────────────────────────────
-let _flushTimer = null;
-const FLUSH_DEBOUNCE_MS = 500;
-
-function scheduleFlush() {
-  if (_flushTimer) clearTimeout(_flushTimer);
-  _flushTimer = setTimeout(doFlush, FLUSH_DEBOUNCE_MS);
-}
-
-async function flushNow() {
-  if (_flushTimer) clearTimeout(_flushTimer);
-  _flushTimer = null;
-  await doFlush();
-}
-// ── Answer key cache ────────────────────────────────────────────────────────
-async function answerKeyGet(key, options = {}) {
-  await ensureLoaded();
-  key = normText(key);
-  const entry = _answerKeyMem[key];
-  if (!entry) return null;
-  const ts = entry[0];
-  const ttl = cfg('CACHE_TTL');
-  const permanent = entry[1].some((hit) => hit && (
-    hit.course === 'learned-review' ||
-    hit.course === 'imported' ||
-    (typeof hit.course === 'string' && hit.course.startsWith('harvested-'))
-  ));
-  if (ttl > 0 && !permanent && Date.now() / 1000 - ts > ttl) {
-    delete _answerKeyMem[key];
-    markKey('ak', key, true);
-    scheduleFlush();
-    return null;
-  }
-  const wrong = (await getWrongAnswers(key)).map((answer) => normText(answer)).filter(Boolean);
-  const includeUnverified = options && options.includeUnverified === true;
-  return entry[1].filter((hit) => {
-    if (!hit || hit.wrong === true) return false;
-    if (!includeUnverified && hit.verified !== true) return false;
-    const answer = hitAnswerNorm(hit);
-    return !answer || !wrong.some((knownWrong) =>
-      answer === knownWrong || similarity(answer, knownWrong) >= 0.9
-    );
-  });
-}
-
-function hitAnswerNorm(hit) {
-  if (!hit || typeof hit !== 'object' || typeof hit.answer !== 'string') return '';
-  return normText(hit.answer);
-}
-
-// Verified answers always outrank unverified ones and conflicting guesses are
-// purged: as soon as a question has a `verified: true` hit, every hit with a
-// different answer is dropped and the verified hit is moved to index 0.
-// Hits flagged `wrong: true` never survive a write.
-function rankHits(hits) {
-  if (!Array.isArray(hits)) return [];
-  const verified = [];
-  const unverified = [];
-  const other = [];
-  const seen = new Set();
-  for (const hit of hits) {
-    if (hit && typeof hit === 'object' && hit.wrong === true) continue;
-    const answerNorm = hitAnswerNorm(hit);
-    if (!answerNorm) { other.push(hit); continue; }
-    if (seen.has(answerNorm)) continue;
-    seen.add(answerNorm);
-    if (hit.verified === true) verified.push(hit);
-    else unverified.push(hit);
-  }
-  if (!verified.length) return unverified.concat(other);
-  const verifiedNorms = verified.map(hitAnswerNorm);
-  const kept = unverified.filter((hit) => {
-    const answerNorm = hitAnswerNorm(hit);
-    // Keep unverified hits that are only a spacing/punctuation variant of a
-    // verified answer; everything else is a conflicting guess and is purged.
-    return verifiedNorms.some((norm) => norm === answerNorm || similarity(answerNorm, norm) >= 0.9);
-  });
-  return verified.concat(kept, other);
-}
-
-// `opts.replaceVerified` is for single-answer keys (one matching statement, one
-// MCQ prompt): a freshly graded verified answer retires older verified hits that
-// now contradict it, so a stale pair can never outrank Moodle's latest result.
-async function answerKeyPut(key, hits, course = 'learned-review', opts = {}) {
-  await ensureLoaded();
-  const verified = !!(opts && opts.verified);
-  const replaceVerified = !!(opts && opts.replaceVerified);
-  if (typeof hits === 'string') {
-    const question = key;
-    key = normText(question);
-    const answer = hits.replace(/<[^>]+>/g, '').trim();
-    if (!key || !answer) return;
-    const answerNorm = normText(answer);
-    hits = (_answerKeyMem[key]?.[1] || []).slice();
-    if (verified && replaceVerified) {
-      hits = hits.filter((hit) => !hit || typeof hit !== 'object' ||
-        hit.verified !== true || normText(hit.answer) === answerNorm);
-    }
-    const existing = hits.find((hit) => hit && normText(hit.answer) === answerNorm);
-    if (existing) {
-      if (verified && !existing.verified) existing.verified = true;
-    } else {
-      const hit = { question: question.trim(), answer, course };
-      if (verified) hit.verified = true;
-      hits.push(hit);
-    }
-    await wrongDeleteFuzzy(key, answerNorm);
-  } else if (Array.isArray(hits) && verified) {
-    hits = hits.map((hit) => (hit && typeof hit === 'object') ? { ...hit, verified: true } : hit);
-  }
-  key = normText(key);
-  if (!key || !Array.isArray(hits) || !hits.length) return;
-
-  // Verified answers are authoritative: purge them out of the wrong cache so a
-  // stale "wrong" record can never outvote what Moodle confirmed on review.
-  const verifiedNorms = [];
-  for (const hit of hits) {
-    if (!hit || typeof hit !== 'object' || hit.verified !== true) continue;
-    const answerNorm = hitAnswerNorm(hit);
-    if (answerNorm && !verifiedNorms.includes(answerNorm)) verifiedNorms.push(answerNorm);
-  }
-  for (const answerNorm of verifiedNorms) await wrongDeleteFuzzy(key, answerNorm);
-
-  // Purge unverified hits that the wrong cache already knows are incorrect, then
-  // force verified hits to index 0 so lookups always see them first.
-  const knownWrong = (await getWrongAnswers(key)).map((item) => normText(item)).filter(Boolean);
-  if (knownWrong.length) {
-    hits = hits.filter((hit) => {
-      if (!hit || typeof hit !== 'object' || hit.verified === true) return true;
-      const answerNorm = hitAnswerNorm(hit);
-      if (!answerNorm) return true;
-      return !knownWrong.some((item) => item === answerNorm || similarity(answerNorm, item) >= 0.9);
-    });
-  }
-  hits = rankHits(hits);
-  if (!hits.length) {
-    // Everything stored for this question was a known-wrong guess: drop the key
-    // instead of keeping a poisoned entry around.
-    if (_answerKeyMem[key]) {
-      delete _answerKeyMem[key];
-      markKey('ak', key, true);
-      scheduleFlush();
-    }
-    return;
-  }
-
-  _answerKeyMem[key] = [Date.now() / 1000, hits];
-  markKey('ak', key);
-  evictAnswerKeys();
-  scheduleFlush();
-}
-
-function evictAnswerKeys() {
-  const max = cfg('CACHE_MAX');
-  const keys = Object.keys(_answerKeyMem);
-  if (keys.length <= max) return;
-  keys.sort((a, b) => (_answerKeyMem[a][0] || 0) - (_answerKeyMem[b][0] || 0));
-  for (let i = 0; i < keys.length - max; i++) {
-    delete _answerKeyMem[keys[i]];
-    markKey('ak', keys[i], true);
-  }
-}
-
-async function saveLocalAnswer(question, answer, course = 'learned-review') {
-  const key = normText(question);
-  const value = (answer || '').replace(/<[^>]+>/g, '').trim();
-  if (!key || !value) return;
-  const hits = (await answerKeyGet(key, { includeUnverified: true })) || [];
-  const answerNorm = normText(value);
-  if (!hits.some((hit) => hit && normText(hit.answer) === answerNorm)) {
-    hits.push({
-      question: (question || '').trim(),
-      answer: value,
-      course,
-    });
-  }
-  await answerKeyPut(key, hits);
-}
-
-async function answerKeyImport(imported) {
-  await ensureLoaded();
-  const questions = unwrapBankQuestions(imported);
-  if (!questions) {
-    throw new Error('Question bank JSON must contain a question map.');
-  }
-  let added = 0;
-  for (const [rawKey, entry] of Object.entries(questions)) {
-    if (BANK_META_KEYS.has(rawKey)) continue;
-    const key = normText(rawKey);
-    const normalized = normalizeAnswerEntry(rawKey, entry);
-    if (!key || !normalized) continue;
-    const existing = _answerKeyMem[key] || [normalized[0], []];
-    const hits = existing[1].slice();
-    const seen = new Set(hits.filter((hit) => hit && hit.answer).map((hit) =>
-      `${normText(hit.question || rawKey)}|${normText(hit.answer)}`));
-    for (const hit of normalized[1]) {
-      const signature = `${normText(hit.question || rawKey)}|${normText(hit.answer)}`;
-      if (seen.has(signature)) continue;
-      seen.add(signature);
-      hits.push(hit);
-      added++;
-    }
-    if (hits.length) {
-      _answerKeyMem[key] = [Math.max(existing[0] || 0, normalized[0]), hits];
-      markKey('ak', key);
-    }
-  }
-  evictAnswerKeys();
-  scheduleFlush();
-  return { added, questions: Object.keys(_answerKeyMem).length };
-}
-
-// Keys a bank file may carry that are not questions themselves. They must never be
-// imported as question entries (a bare map without the `questions` wrapper still
-// sometimes ships `updatedAt` alongside the questions).
-const BANK_META_KEYS = new Set(['questions', 'updatedAt', 'format', 'version', 'exportedAt']);
-
-/**
- * Extract the question map out of a bank payload.
- *
- * GitHub banks are written either as `{ "questions": { ... }, "updatedAt": "..." }`
- * (the wrapper used by the Python harvester and by this extension's exporter) or as
- * a bare `{ question: [timestamp, hits] }` map. Unwrap before iterating over the
- * question keys. Returns null when the payload is not a question map at all.
- */
-function unwrapBankQuestions(bankJson) {
-  const entriesMap = (bankJson && typeof bankJson.questions === 'object' && !Array.isArray(bankJson.questions))
-    ? bankJson.questions
-    : bankJson;
-  if (!entriesMap || typeof entriesMap !== 'object' || Array.isArray(entriesMap)) return null;
-  return entriesMap;
-}
-
-/**
- * Merge a GitHub bank payload into chrome.storage.local (the pull direction).
- *
- * Shared by the options page ("Sync Now") and the service worker (push sync), so
- * both accept every bank shape and count new answers identically.
- * Returns { added, questions }: newly stored answers and the resulting total.
- */
-async function mergeRemoteBankIntoLocal(bankJson) {
-  const entriesMap = unwrapBankQuestions(bankJson);
-  if (!entriesMap) return { added: 0, questions: await answerKeyCount() };
-
-  const pullMap = {};
-  for (const [rawKey, value] of Object.entries(entriesMap)) {
-    if (!rawKey || BANK_META_KEYS.has(rawKey)) continue;
-    const normalized = normalizeAnswerEntry(rawKey, value);
-    if (!normalized || !normalized[1].length) continue;
-    pullMap[rawKey] = normalized;
-  }
-  const pulled = await answerKeyImport({ questions: pullMap });
-  // Persist right away so the service worker and content scripts see the merged
-  // answers without waiting for the 500 ms flush debounce.
-  try {
-    await flushNow();
-  } catch (error) {
-    // Merged in memory; the scheduled flush retries the storage write.
-  }
-  return { added: pulled.added, questions: pulled.questions };
-}
-
-async function answerKeyDelete(key) {
-  await ensureLoaded();
-  delete _answerKeyMem[key];
-  markKey('ak', key, true);
-  scheduleFlush();
-}
-
-async function answerKeyDeleteFuzzy(qNorm) {
-  await ensureLoaded();
-  for (const storedKey of Object.keys(_answerKeyMem)) {
-    const ratio = similarity(qNorm, storedKey);
-    const fuzzy = ratio >= 0.85 ||
-      (storedKey.length >= 20 && (storedKey.includes(qNorm) || qNorm.includes(storedKey)));
-    if (storedKey === qNorm || fuzzy) {
-      delete _answerKeyMem[storedKey];
-      markKey('ak', storedKey, true);
-    }
-  }
-  scheduleFlush();
-}
-
-// ── Wrong cache ─────────────────────────────────────────────────────────────
-async function wrongGetAll(qNorm) {
-  await ensureLoaded();
-  const combined = [];
-  for (const [storedKey, values] of Object.entries(_wrongMem)) {
-    const ratio = similarity(qNorm, storedKey);
-    const fuzzy = ratio >= 0.85 ||
-      (storedKey.length >= 20 && (storedKey.includes(qNorm) || qNorm.includes(storedKey)));
-    if (storedKey === qNorm || fuzzy) {
-      for (const v of values) {
-        if (typeof v === 'string' && v.trim()) combined.push(v);
-      }
-    }
-  }
-  const seen = new Set();
-  return combined.filter((v) => {
-    const n = normText(v);
-    if (!n || seen.has(n)) return false;
-    seen.add(n);
-    return true;
-  });
-}
-
-async function wrongSet(key, values) {
-  await ensureLoaded();
-  if (typeof values === 'string') {
-    key = normText(key);
-    const answer = normText(values);
-    if (!key || !answer) return;
-    values = [...(_wrongMem[key] || []), answer];
   } else {
-    key = normText(key);
-  }
-  if (!key) return;
-  _wrongMem[key] = [...new Set(values)];
-  markKey('wrong', key);
-  scheduleFlush();
-}
-
-async function getWrongAnswers(question) {
-  const key = normText(question);
-  return key ? wrongGetAll(key) : [];
-}
-
-async function answerKeyAddWrong(questionText, wrongAnswerOrCombo, courseTag) {
-  await ensureLoaded();
-  const key = normText(questionText);
-  const rawAnswer = String(wrongAnswerOrCombo || '').replace(/<[^>]+>/g, '').trim();
-  if (!key || !rawAnswer) return;
-
-  const isCombo = courseTag === 'multiselect-combo' || /\s*\|\|\s*/.test(rawAnswer);
-  const combo = isCombo
-    ? rawAnswer.split(/\s*\|\|\s*/).map(normText).filter(Boolean).sort()
-    : [];
-  const wrongAnswer = combo.length
-    ? 'MULTISELECT PARTIAL COMBO ' + combo.map((choice) => choice.length + ' ' + choice).join(' ')
-    : rawAnswer;
-  await wrongSet(key, wrongAnswer);
-
-  if (combo.length) return;
-  const answerNorm = normText(rawAnswer);
-  const entry = _answerKeyMem[key];
-  if (!answerNorm || !entry) return;
-  const hits = entry[1].filter((hit) => hitAnswerNorm(hit) !== answerNorm);
-  if (hits.length === entry[1].length) return;
-  if (hits.length) {
-    _answerKeyMem[key] = [entry[0], hits];
-    markKey('ak', key);
-  } else {
-    delete _answerKeyMem[key];
-    markKey('ak', key, true);
-  }
-  scheduleFlush();
-}
-
-async function answerKeyGetWrong(questionText) {
-  return getWrongAnswers(questionText);
-}
-
-async function learnWrong(question, answer) {
-  const key = normText(question);
-  const value = normText(answer);
-  if (!key || !value) return;
-  await answerKeyDeleteFuzzy(key);
-  const previous = await wrongGetAll(key);
-  if (!previous.some((item) => normText(item) === value)) {
-    previous.push(value);
-  }
-  await wrongSet(key, previous);
-}
-
-async function learnCorrect(question, answer) {
-  const key = normText(question);
-  const value = (answer || '').replace(/<[^>]+>/g, '').trim();
-  if (!key || !value) return;
-  await saveLocalAnswer(question, value);
-  await wrongDeleteFuzzy(key, normText(value));
-}
-
-async function wrongDeleteFuzzy(qNorm, answerNorm) {
-  await ensureLoaded();
-  for (const storedKey of Object.keys(_wrongMem)) {
-    const ratio = similarity(qNorm, storedKey);
-    const fuzzy = ratio >= 0.85 ||
-      (storedKey.length >= 20 && (storedKey.includes(qNorm) || qNorm.includes(storedKey)));
-    if (storedKey === qNorm || fuzzy) {
-      const filtered = _wrongMem[storedKey].filter((item) => normText(item) !== answerNorm);
-      if (filtered.length === _wrongMem[storedKey].length) continue;
-      if (filtered.length) {
-        _wrongMem[storedKey] = filtered;
-        markKey('wrong', storedKey);
-      } else {
-        delete _wrongMem[storedKey];
-        markKey('wrong', storedKey, true);
-      }
-    }
-  }
-  scheduleFlush();
-}
-
-async function answerKeyGetAll() {
-  await ensureLoaded();
-  return { ..._answerKeyMem };
-}
-
-async function answerKeyCount() {
-  await ensureLoaded();
-  return Object.keys(_answerKeyMem).length;
-}
-
-async function wrongDeleteKey(key) {
-  await ensureLoaded();
-  delete _wrongMem[key];
-  markKey('wrong', key, true);
-  scheduleFlush();
-}
-
-async function searchGet(key) {
-  await ensureLoaded();
-  return _searchMem[key] || null;
-}
-
-async function searchPut(key, text) {
-  await ensureLoaded();
-  _searchMem[key] = text;
-  markKey('search', key);
-  scheduleFlush();
-}
-
-// ── Bundled starter bank (default_bank.json) ───────────────────────────────
-//    Imported once per extension version; import is merge-only and idempotent.
-async function seedDefaultBank(force = false) {
-  const version = chrome.runtime.getManifest().version;
-  const flag = await chrome.storage.local.get('default_bank_version');
-  if (!force && flag.default_bank_version === version) return null;
-  const response = await fetch(chrome.runtime.getURL('default_bank.json'));
-  if (!response.ok) throw new Error(`default_bank.json HTTP ${response.status}`);
-  const result = await answerKeyImport(await response.json());
-  await flushNow();
-  await chrome.storage.local.set({ default_bank_version: version });
-  return result;
-}
-
-// ── Superscript / subscript / Moodle image normalization ────────────────────
-//  `cleanDOMToAI` in the reference toolkit turns <sup>/<sub> markup into the
-//  real unicode characters so "2<sup>3</sup>" reads exactly like a typed "2³".
-//  `unscriptDigits()` then folds both forms back to plain digits for matching,
-//  and attempt-specific pluginfile.php URLs collapse into a stable
-//  `[moodle-asset:<filename>]` token, so the same item matches across attempts.
-const SUP_MAP = {
-  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-  '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ', 'i': 'ⁱ', 'x': 'ˣ', 'y': 'ʸ', 'm': 'ᵐ',
-  'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ',
-};
-const SUB_MAP = {
-  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
-  '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎', 'a': 'ₐ', 'e': 'ₑ', 'o': 'ₒ', 'x': 'ₓ', 'i': 'ᵢ',
-  'j': 'ⱼ', 'n': 'ₙ', 'p': 'ₚ',
-};
-
-const UNSCRIPT_DIGITS = {
-  '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
-  '₀': '0', '₁': '1', '₂': '2', '₃': '3', '₄': '4', '₅': '5', '₆': '6', '₇': '7', '₈': '8', '₉': '9',
-};
-
-/** Fold unicode superscript/subscript digits (2³, 10₂) back to ASCII digits. */
-function unscriptDigits(str) {
-  if (!str) return '';
-  return String(str).replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉]/g, (ch) => UNSCRIPT_DIGITS[ch] || ch);
-}
-
-// Moodle rewrites the context/attempt id inside every pluginfile.php URL, so the
-// raw src can never match between attempts — the filename is stable. The path
-// prefix varies (`/pluginfile.php`, `/2612/pluginfile.php`, ...).
-const MOODLE_ASSET_SRC = '(?:https?:\\/\\/[^\\s"\']*?)?\\/pluginfile\\.php\\/\\d+\\/question\\/(?:answer|questiontext|feedback)\\/\\d+(?:\\/\\d+)?\\/([^?#\\s"\']+)';
-const MOODLE_ASSET_RE = new RegExp(MOODLE_ASSET_SRC, 'i');
-// Full URL form: the `?forcedownload=1` / `#...` tail is attempt noise too.
-const MOODLE_ASSET_ANY_RE = new RegExp(MOODLE_ASSET_SRC + '(?:[?#][^\\s"\']*)?', 'gi');
-
-/** Stable `[moodle-asset:<filename>]` token for a Moodle question file URL. */
-function moodleAssetToken(src) {
-  const text = String(src || '');
-  const match = text.match(MOODLE_ASSET_RE);
-  if (!match || !match[1]) return '';
-  let name = match[1];
-  try { name = decodeURIComponent(name); } catch (error) { /* keep the raw name */ }
-  return `[moodle-asset:${name}]`;
-}
-
-// ── Utility: norm_text port ────────────────────────────────────────────────
-function normText(s) {
-  s = (s || '').toLowerCase();
-  // Attempt-independent image token (URL or already-written token form).
-  s = s.replace(MOODLE_ASSET_ANY_RE, ' moodle asset $1 ');
-  s = s.replace(/\[\s*moodle\s*-\s*asset\s*:\s*([^\]]+)\]/g, ' moodle asset $1 ');
-  // 2³ / 10₂ must fold to 23 / 102 before non-ASCII characters are stripped.
-  s = unscriptDigits(s);
-  s = s.replace(/^(question\s*)?\d+[.)]\s*/, '');
-  s = s.replace(/\bselect one\b|\bchoose\.\.\.|\btrue or false\b/g, '');
-  s = s.replace(/[_\-]{2,}/g, ' ');
-  s = s.replace(/[^a-z0-9 ]/g, ' ');
-  return s.replace(/\s+/g, ' ').trim();
-}
-
-// ── Simple string similarity (bigram Dice) ────────────────────────────────
-function similarity(a, b) {
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  const bigrams = (s) => {
-    const m = new Map();
-    for (let i = 0; i < s.length - 1; i++) {
-      const bg = s.substring(i, i + 2);
-      m.set(bg, (m.get(bg) || 0) + 1);
-    }
-    return m;
-  };
-  const m1 = bigrams(a);
-  const m2 = bigrams(b);
-  let intersection = 0;
-  for (const [bg, c1] of m1) {
-    const c2 = m2.get(bg) || 0;
-    intersection += Math.min(c1, c2);
-  }
-  const total = [...m1.values()].reduce((s, c) => s + c, 0) +
-                [...m2.values()].reduce((s, c) => s + c, 0);
-  return total === 0 ? 0 : (2 * intersection) / total;
-}
-
-// ── GitHub Contents API helpers ─────────────────────────────────────────────
-//  Shared by the service worker (background.js) and the options page
-//  (options.js), both of which include this file.
-//
-//  Three GitHub quirks matter here:
-//   1. The metadata endpoint must be requested with the JSON media type
-//      (`application/vnd.github+json`); requesting `...raw+json` returns the
-//      file body instead of the JSON envelope, so `data.sha` is missing and the
-//      subsequent PUT fails with 422 "sha wasn't supplied".
-//   2. Base64 payloads carry UTF-8 bytes. `atob()` yields one char per byte, so
-//      decoding with TextDecoder (and encoding with TextEncoder) keeps `²`,
-//      `₂`, emoji, etc. intact instead of producing mojibake.
-//   3. GET /contents only inlines `content` for files up to 1 MB. Above that
-//      GitHub answers with `"encoding": "none"` and an empty `content`, so the
-//      body has to come from the Git blobs API (up to 100 MB) or `download_url`.
-
-const GITHUB_API_ROOT = 'https://api.github.com';
-
-/** Decode a Base64 payload (Contents API / Git blob API) into a UTF-8 string. */
-function decodeBase64Utf8(b64) {
-  const bin = atob(String(b64 || '').replace(/\s+/g, ''));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder('utf-8').decode(bytes);
-}
-
-/** Encode a UTF-8 string into Base64 (btoa alone throws on non-Latin1 input). */
-function encodeBase64Utf8(str) {
-  const bytes = new TextEncoder().encode(str == null ? '' : String(str));
-  const CHUNK = 0x8000; // String.fromCharCode.apply() has an argument-count limit
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-// Legacy names kept so older call sites keep working.
-function b64ToUtf8(b64) { return decodeBase64Utf8(b64); }
-function utf8ToB64(text) { return encodeBase64Utf8(text); }
-
-/** Common GitHub headers: JSON media type plus the token when one is set. */
-function gitHubHeaders(token, accept) {
-  const headers = { Accept: accept || 'application/vnd.github+json' };
-  if (token) headers.Authorization = 'Bearer ' + token;
-  return headers;
-}
-
-/** Pull the human-readable message out of a failed GitHub response body. */
-async function gitHubErrorDetail(resp) {
-  try {
-    const text = (await resp.text()).trim();
-    if (!text) return '';
-    try {
-      const parsed = JSON.parse(text);
-      const message = parsed && (parsed.message || parsed.error);
-      return String(message || text.slice(0, 300)).trim();
-    } catch (error) {
-      return text.slice(0, 300);
-    }
-  } catch (error) {
-    return '';
-  }
-}
-
-/**
- * Read the raw text behind a Contents API metadata response.
- * Inline Base64 is used when GitHub sends it; files over 1 MB (`encoding:
- * "none"`) are read from the Git blobs API, with `download_url` as a fallback.
- * Every failure reason is collected so the caller can surface it verbatim.
- */
-async function gitHubReadFileText(owner, repo, token, meta) {
-  if (meta.contentB64) {
-    return { text: decodeBase64Utf8(meta.contentB64), source: 'contents' };
-  }
-
-  const failures = [];
-
-  if (meta.sha) {
-    try {
-      const blobUrl = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/git/blobs/${encodeURIComponent(meta.sha)}`;
-      const blobResp = await fetch(blobUrl, { headers: gitHubHeaders(token), cache: 'no-store' });
-      if (!blobResp.ok) {
-        const detail = await gitHubErrorDetail(blobResp);
-        failures.push(`Git blob fetch failed: HTTP ${blobResp.status}${detail ? ' — ' + detail : ''}`);
-      } else {
-        const blob = await blobResp.json();
-        if (blob && typeof blob.content === 'string' && blob.content) {
-          return blob.encoding === 'base64'
-            ? { text: decodeBase64Utf8(blob.content), source: 'blob' }
-            : { text: blob.content, source: 'blob' };
-        }
-        failures.push('Git blob response contained no content');
-      }
-    } catch (error) {
-      failures.push(`Git blob fetch failed: ${error.message}`);
-    }
-  }
-
-  if (meta.downloadUrl) {
-    try {
-      // raw.githubusercontent.com serves the file as text; the token is still
-      // required for private repositories.
-      const rawResp = await fetch(meta.downloadUrl, {
-        headers: token ? { Authorization: 'Bearer ' + token } : {},
-        cache: 'no-store',
-      });
-      if (!rawResp.ok) {
-        failures.push(`raw download failed: HTTP ${rawResp.status}`);
-      } else {
-        return { text: await rawResp.text(), source: 'download_url' };
-      }
-    } catch (error) {
-      failures.push(`raw download failed: ${error.message}`);
-    }
-  }
-
-  throw new Error(failures.join('; ') || `GitHub returned no file content for ${meta.sha || 'this file'}`);
-}
-
-/**
- * Read a JSON file from a GitHub repo via the Contents API.
- *
- * Returns { sha, content, missing, parseError, size, source }:
- *  - `content` is the parsed JSON object (null when absent or unparsable)
- *  - `parseError` carries the exact JSON.parse/HTTP/decoding failure, never
- *    masked as "unparsable"
- *  - `missing` is true on 404 and `source` records where the body came from
- *    ('contents' | 'blob' | 'download_url' | 'empty' | 'error' | 'missing')
- *
- * Throws only when the metadata request itself fails (non-404 HTTP error).
- */
-async function gitHubGetFile(owner, repo, path, token) {
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?t=${Date.now()}`;
-  const resp = await fetch(url, { headers: gitHubHeaders(token), cache: 'no-store' });
-  if (resp.status === 404) {
-    return { sha: null, content: null, missing: true, parseError: '', size: 0, source: 'missing' };
-  }
-  if (!resp.ok) {
-    const detail = await gitHubErrorDetail(resp);
-    const failure = new Error(`GitHub API error: HTTP ${resp.status}${detail ? ' — ' + detail : ''}`);
-    failure.status = resp.status;
-    failure.detail = detail;
-    throw failure;
-  }
-
-  const data = (await resp.json()) || {};
-  const meta = {
-    sha: data.sha || null,
-    size: Number(data.size) || 0,
-    encoding: data.encoding || '',
-    contentB64: typeof data.content === 'string' ? data.content : '',
-    downloadUrl: data.download_url || '',
-  };
-
-  let text = '';
-  let source = 'empty';
-  try {
-    const read = await gitHubReadFileText(owner, repo, token, meta);
-    text = read.text;
-    source = read.source;
-  } catch (error) {
-    return {
-      sha: meta.sha, content: null, missing: false,
-      parseError: error.message, size: meta.size, source: 'error',
-    };
-  }
-
-  if (!text.trim()) {
-    return {
-      sha: meta.sha, content: null, missing: false,
-      parseError: `GitHub returned an empty body (size ${meta.size} bytes, read from ${source})`,
-      size: meta.size, source,
-    };
-  }
-
-  try {
-    return {
-      sha: meta.sha, content: JSON.parse(text), missing: false,
-      parseError: '', size: meta.size, source,
-    };
-  } catch (error) {
-    const preview = text.trim().slice(0, 80).replace(/\s+/g, ' ');
-    return {
-      sha: meta.sha, content: null, missing: false,
-      parseError: `${error.message} (${text.length} chars from ${source}, starts with "${preview}")`,
-      size: meta.size, source,
-    };
-  }
-}
-
-/**
- * Create or update a JSON file via the Contents API.
- * Always sends the current `sha` when updating (omit only for a brand-new
- * file). If the server rejects the stale sha with 409/422, re-fetch the latest
- * sha once and retry. Returns { ok, status, message }.
- */
-async function gitHubPutJson(owner, repo, path, token, data, message, sha) {
-  const headers = gitHubHeaders(token);
-  headers['Content-Type'] = 'application/json';
-  const url = `${GITHUB_API_ROOT}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
-  // UTF-8 aware: multi-byte characters (², ₂, emoji) survive the round trip.
-  const content = encodeBase64Utf8(JSON.stringify(data, null, 2));
-
-  const doPut = (fileSha) => {
-    const payload = { message, content };
-    if (fileSha) payload.sha = fileSha; // Omit only when creating a new file.
-    return fetch(url, { method: 'PUT', headers, body: JSON.stringify(payload) });
-  };
-
-  let resp = await doPut(sha);
-  if (resp.status === 409 || resp.status === 422) {
-    // Stale sha: re-fetch the latest metadata once and retry the PUT.
-    let latestSha = null;
-    try {
-      latestSha = (await gitHubGetFile(owner, repo, path, token)).sha;
-    } catch (e) {
-      latestSha = null;
-    }
-    resp = await doPut(latestSha);
-  }
-
-  if (resp.ok) return { ok: true, status: resp.status, message: '' };
-  const apiMessage = await gitHubErrorDetail(resp);
-  const hint = resp.status === 413 ? ' (file is too large for the Contents API)' : '';
-  return { ok: false, status: resp.status, message: `${apiMessage}${hint}`.trim() };
-}
-
-function doFlush() {
-  _flushTimer = null;
-  return mutex(async () => {
-    const pending = ['ak', 'wrong', 'search'].some((kind) => _dirty[kind].size || _deleted[kind].size);
-    if (!pending) return;
-    const stored = await chrome.storage.local.get([
-      STORAGE_KEYS.ANSWER_KEY,
-      STORAGE_KEYS.WRONG,
-      STORAGE_KEYS.SEARCH,
-    ]);
-    // Synchronous merge section: no await between merge and set().
-    _answerKeyMem = overlayPending('ak', validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {}), _answerKeyMem);
-    _wrongMem = overlayPending('wrong', validateWrong(stored[STORAGE_KEYS.WRONG] || {}), _wrongMem);
-    _searchMem = overlayPending('search', validateSearch(stored[STORAGE_KEYS.SEARCH] || {}), _searchMem);
-    for (const kind of ['ak', 'wrong', 'search']) {
-      _dirty[kind].clear();
-      _deleted[kind].clear();
-    }
-    await chrome.storage.local.set({
-      [STORAGE_KEYS.ANSWER_KEY]: _answerKeyMem,
-      [STORAGE_KEYS.WRONG]: _wrongMem,
-      [STORAGE_KEYS.SEARCH]: _searchMem,
-    });
-  });
-}
+    (function () {
 
 ;
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -6748,6 +7136,7 @@ try {
 
     /* ── Configuration ──────────────────────────────────────────────────── */
 
+    const HUD_HOST_ID = 'qb-harvester-host';
     const HUD_ID = 'qb-hud';
     const LOG_ID = 'qb-log';
     const STATUS_ID = 'qb-status';
@@ -6867,6 +7256,8 @@ try {
 
     /* ── State ──────────────────────────────────────────────────────────── */
 
+    let hudHost = null;
+    let hudShadow = null;
     let hudEl = null;
     let logEl = null;
     let statusEl = null;
@@ -7038,9 +7429,16 @@ try {
       } catch (error) { /* console may be unavailable */ }
     }
 
-    // mascot.js tees this function when it boots; keeping the same global name
-    // as content.js means the 7-cat reacts to HUD output on every site.
+    // mascot.js tees window.logHUD when it boots; route calls through emitLog so
+    // the mascot observes harvester output even inside the closed Shadow DOM.
     window.logHUD = logHUD;
+    function emitLog(level, text) {
+      if (typeof window.logHUD === 'function' && window.logHUD !== logHUD) {
+        window.logHUD(level, text);
+        return;
+      }
+      emitLog(level, text);
+    }
 
     function setStatus(text, className) {
       if (!statusEl) return;
@@ -7073,11 +7471,9 @@ try {
       } catch (error) { done(true); }
     }
 
-    // Show/hide the panel with an inline display: #qb-hud is a flex column, so
-    // restoring with 'flex' keeps the expanded panel and the 🐾 pill identical.
     function setPanelVisible(visible) {
-      if (!hudEl) return;
-      hudEl.style.display = visible ? 'flex' : 'none';
+      if (hudHost) hudHost.style.display = visible ? 'block' : 'none';
+      if (hudEl) hudEl.style.display = visible ? 'flex' : 'none';
     }
 
     function applyBotEnabled(enabled) {
@@ -7093,13 +7489,13 @@ try {
           }
           setBusy(false);
           setStatus('stopped', 'stopped');
-          logHUD('warn', changed ? 'Bot stopped — disabled from the popup.' : 'Bot stopped.');
+          emitLog('warn', changed ? 'Bot stopped — disabled from the popup.' : 'Bot stopped.');
         }
         setPanelVisible(false);
         return;
       }
       setPanelVisible(true);
-      if (changed) logHUD('info', 'Bot enabled — harvester ready.');
+      if (changed) emitLog('info', 'Bot enabled — harvester ready.');
     }
 
     function watchBotEnabled() {
@@ -7150,14 +7546,21 @@ try {
     }
 
     function buildHud() {
-      const existing = document.getElementById(HUD_ID);
-      if (existing) {
-        hudEl = existing;
-        logEl = existing.querySelector('#' + LOG_ID);
-        statusEl = existing.querySelector('#' + STATUS_ID);
+      const existingHost = document.getElementById(HUD_HOST_ID);
+      if (existingHost && hudEl) {
         setPanelVisible(botEnabled);
         return;
       }
+
+      hudHost = existingHost || document.createElement('div');
+      hudHost.id = HUD_HOST_ID;
+      hudHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+      hudShadow = hudHost.shadowRoot || hudHost.attachShadow({ mode: 'closed' });
+      const style = document.createElement('style');
+      try {
+        fetch(chrome.runtime.getURL('hud.css')).then((r) => r.text()).then((css) => { style.textContent = css; }).catch(() => {});
+      } catch (error) { /* ignore */ }
+      hudShadow.appendChild(style);
 
       const hud = document.createElement('div');
       hud.id = HUD_ID;
@@ -7211,10 +7614,14 @@ try {
       actions.append(pageBtn, courseBtn, stopBtn);
       hud.append(header, body, actions);
 
-      const anchor = document.body || document.documentElement;
-      anchor.appendChild(hud);
+      hudShadow.appendChild(hud);
+      if (!hudHost.isConnected) {
+        const anchor = document.body || document.documentElement;
+        anchor.appendChild(hudHost);
+      }
 
       hudEl = hud;
+      window.__qbHarvesterHeader = header;
       bindHudEvents(header);
       setCollapsed(!isStudyHost());
       refreshCourseButton();
@@ -7296,12 +7703,12 @@ try {
     function requestStop() {
       if (!busy) {
         setStatus('idle', '');
-        logHUD('info', 'Idle — nothing is running.');
+        emitLog('info', 'Idle — nothing is running.');
         return;
       }
       stopRequested = true;
       setStatus('stopping', 'waiting');
-      logHUD('warn', 'Stop requested — halting harvest.');
+      emitLog('warn', 'Stop requested — halting harvest.');
       if (abortController) {
         try { abortController.abort(); } catch (error) { /* already aborted */ }
       }
@@ -7715,7 +8122,7 @@ try {
           if (pair.verified) verified += 1;
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('error', 'Bank write failed: ' + message);
+          emitLog('error', 'Bank write failed: ' + message);
         }
       }
 
@@ -7724,7 +8131,7 @@ try {
           if (typeof flushNow === 'function') await flushNow();
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('warn', 'Bank flush failed: ' + message);
+          emitLog('warn', 'Bank flush failed: ' + message);
         }
       }
 
@@ -7734,20 +8141,20 @@ try {
     function requestGitHubBankPush() {
       safeSendMessage({ action: 'SYNC_GITHUB_BANK' }, (response, error) => {
         if (error) {
-          logHUD('warn', 'GitHub bank sync unavailable: ' + error);
+          emitLog('warn', 'GitHub bank sync unavailable: ' + error);
           return;
         }
         if (!response) return;
         if (response.error) {
-          logHUD('warn', 'GitHub bank sync failed: ' + response.error);
+          emitLog('warn', 'GitHub bank sync failed: ' + response.error);
           return;
         }
         if (response.status === 'skipped') {
-          logHUD('info', 'GitHub bank not configured — pairs stay in the local bank.');
+          emitLog('info', 'GitHub bank not configured — pairs stay in the local bank.');
           return;
         }
         if (response.status === 'ok') {
-          logHUD('success', 'GitHub bank pushed (' + (response.pushed || 0) + ' questions).');
+          emitLog('success', 'GitHub bank pushed (' + (response.pushed || 0) + ' questions).');
         }
       });
     }
@@ -7765,11 +8172,11 @@ try {
 
     async function harvestPage() {
       if (!botEnabled) {
-        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        emitLog('warn', 'Bot is disabled — enable it in the popup to harvest.');
         return;
       }
       if (busy) {
-        logHUD('warn', 'Harvest is already running.');
+        emitLog('warn', 'Harvest is already running.');
         return;
       }
       if (!hudEl) buildHud();
@@ -7779,7 +8186,7 @@ try {
       stopRequested = false;
       setBusy(true);
       setStatus('harvesting', 'running');
-      logHUD('info', 'Harvest "' + host + '" — reading this page…');
+      emitLog('info', 'Harvest "' + host + '" — reading this page…');
       // Give the mascot's log observer a frame to see the start line.
       await delay(80);
 
@@ -7800,31 +8207,31 @@ try {
 
         if (!pairs.length) {
           setStatus('empty', 'waiting');
-          logHUD('warn', 'Harvesting failed: no Q&A pairs found — highlight a Q&A block or open a study page.');
+          emitLog('warn', 'Harvesting failed: no Q&A pairs found — highlight a Q&A block or open a study page.');
           return;
         }
 
-        logHUD('info', 'Harvest "' + host + '" — ' + pairs.length + ' candidate pair(s) from ' + strategy + '.');
+        emitLog('info', 'Harvest "' + host + '" — ' + pairs.length + ' candidate pair(s) from ' + strategy + '.');
         await delay(40);
 
         const result = await persistPairs(pairs, host);
         if (!result.saved) {
           setStatus('empty', 'waiting');
-          logHUD('warn', 'Harvesting failed: nothing new to store on this page.');
+          emitLog('warn', 'Harvesting failed: nothing new to store on this page.');
           return;
         }
 
         setStatus('done', 'reviewing');
         const savedLabel = result.saved === 1 ? 'answer' : 'answers';
-        logHUD('success', 'Harvested ' + result.saved + ' ' + savedLabel + ' from ' + host + '!');
+        emitLog('success', 'Harvested ' + result.saved + ' ' + savedLabel + ' from ' + host + '!');
         await delay(900);
-        logHUD('info', 'Review page: ' + result.saved + ' pairs ready in the local bank.');
+        emitLog('info', 'Review page: ' + result.saved + ' pairs ready in the local bank.');
         requestGitHubBankPush();
         scheduleIdleStatus(runId);
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         setStatus('stopped', 'stopped');
-        logHUD('error', 'Harvesting failed: ' + message);
+        emitLog('error', 'Harvesting failed: ' + message);
       } finally {
         setBusy(false);
       }
@@ -7917,15 +8324,15 @@ try {
 
     async function harvestCourse() {
       if (!botEnabled) {
-        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        emitLog('warn', 'Bot is disabled — enable it in the popup to harvest.');
         return;
       }
       if (busy) {
-        logHUD('warn', 'Harvest is already running.');
+        emitLog('warn', 'Harvest is already running.');
         return;
       }
       if (!courseHarvestAvailable()) {
-        logHUD('warn', 'Course harvest needs a course page or a paginated page.');
+        emitLog('warn', 'Course harvest needs a course page or a paginated page.');
         return;
       }
       if (!hudEl) buildHud();
@@ -7936,7 +8343,7 @@ try {
       stopRequested = false;
       setBusy(true);
       setStatus('harvesting', 'running');
-      logHUD('info', 'Harvest "' + host + '" — course mode, starting at ?page=1…');
+      emitLog('info', 'Harvest "' + host + '" — course mode, starting at ?page=1…');
       await delay(80);
 
       const seenPairs = new Set();
@@ -7962,10 +8369,10 @@ try {
             const message = error && error.message ? error.message : String(error);
             // First page fallback: harvest what is already open in the tab.
             if (page === 1) {
-              logHUD('warn', 'Harvest "' + host + '" — ?page=1 fetch failed (' + message + '), using the open tab.');
+              emitLog('warn', 'Harvest "' + host + '" — ?page=1 fetch failed (' + message + '), using the open tab.');
               pagePairs = extractPagePairsFromDom();
             } else {
-              logHUD('warn', 'Harvest "' + host + '" — ?page=' + page + ' failed: ' + message);
+              emitLog('warn', 'Harvest "' + host + '" — ?page=' + page + ' failed: ' + message);
               break;
             }
           }
@@ -7974,13 +8381,13 @@ try {
 
           const fresh = pagePairs.filter((pair) => !seenPairs.has(pairSignature(pair)));
           if (!fresh.length) {
-            logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ' has no new pairs.');
+            emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ' has no new pairs.');
             break;
           }
 
           const signature = fresh.map(pairSignature).join('|');
           if (signature === lastSignature) {
-            logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ' repeats the previous page.');
+            emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ' repeats the previous page.');
             break;
           }
           lastSignature = signature;
@@ -7991,13 +8398,13 @@ try {
           verifiedTotal += result.verified;
           pagesRead += 1;
 
-          logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ': +' + result.saved + ' pair(s) stored.');
+          emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ': +' + result.saved + ' pair(s) stored.');
           await delay(120);
         }
 
         if (!savedTotal) {
           setStatus(stopRequested ? 'stopped' : 'empty', stopRequested ? 'stopped' : 'waiting');
-          logHUD('warn', stopRequested
+          emitLog('warn', stopRequested
             ? 'Bot stopped — nothing stored.'
             : 'Harvesting failed: nothing new to store across the course.');
           return;
@@ -8007,20 +8414,20 @@ try {
           if (typeof flushNow === 'function') await flushNow();
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('warn', 'Bank flush failed: ' + message);
+          emitLog('warn', 'Bank flush failed: ' + message);
         }
 
         setStatus(stopRequested ? 'stopped' : 'done', stopRequested ? 'stopped' : 'reviewing');
         const savedLabel = savedTotal === 1 ? 'answer' : 'answers';
-        logHUD('success', 'Harvested ' + savedTotal + ' ' + savedLabel + ' from ' + host + '!');
+        emitLog('success', 'Harvested ' + savedTotal + ' ' + savedLabel + ' from ' + host + '!');
         await delay(900);
 
         if (stopRequested) {
-          logHUD('warn', 'Bot stopped — ' + savedTotal + ' pair(s) kept from ' + pagesRead + ' page(s).');
+          emitLog('warn', 'Bot stopped — ' + savedTotal + ' pair(s) kept from ' + pagesRead + ' page(s).');
         } else {
-          logHUD('info', 'Review page: ' + savedTotal + ' pairs ready in the local bank.');
-          if (verifiedTotal) logHUD('info', 'Verified this run: ' + verifiedTotal + ' pair(s).');
-          if (pagesRead >= MAX_COURSE_PAGES) logHUD('warn', 'Course page limit reached (' + MAX_COURSE_PAGES + ').');
+          emitLog('info', 'Review page: ' + savedTotal + ' pairs ready in the local bank.');
+          if (verifiedTotal) emitLog('info', 'Verified this run: ' + verifiedTotal + ' pair(s).');
+          if (pagesRead >= MAX_COURSE_PAGES) emitLog('warn', 'Course page limit reached (' + MAX_COURSE_PAGES + ').');
         }
 
         requestGitHubBankPush();
@@ -8028,7 +8435,7 @@ try {
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         setStatus('stopped', 'stopped');
-        logHUD('error', 'Harvesting failed: ' + message);
+        emitLog('error', 'Harvesting failed: ' + message);
       } finally {
         setBusy(false);
       }
@@ -8037,10 +8444,10 @@ try {
     /* ── Boot ───────────────────────────────────────────────────────────── */
 
     function ensureMounted() {
-      if (!hudEl) return;
-      if (!hudEl.isConnected) {
+      if (!hudHost) return;
+      if (!hudHost.isConnected) {
         try {
-          (document.body || document.documentElement).appendChild(hudEl);
+          (document.body || document.documentElement).appendChild(hudHost);
         } catch (error) { /* page may be tearing down */ }
       }
       refreshCourseButton();
@@ -8048,12 +8455,12 @@ try {
 
     function init() {
       try {
-        if (document.getElementById(HUD_ID)) return;
+        if (document.getElementById(HUD_HOST_ID)) return;
         buildHud();
         watchBotEnabled();
-        logHUD('info', 'Ready on ' + (currentHost() || 'this page') + ' — highlight text or use Harvest Page.');
+        emitLog('info', 'Ready on ' + (currentHost() || 'this page') + ' — highlight text or use Harvest Page.');
         if (hasPagination()) {
-          logHUD('info', 'Paginated page detected — Harvest Course can walk ?page=1, 2, 3…');
+          emitLog('info', 'Paginated page detected — Harvest Course can walk ?page=1, 2, 3…');
         }
         window.setInterval(ensureMounted, 5000);
         window.addEventListener('beforeunload', () => {
@@ -8066,6 +8473,8 @@ try {
       }
     }
 
+    window.__qbHarvesterInternals = { parseHighlightedSelection, makePair, cleanQuestion, cleanAnswer, extractAmauoed, extractQuizlet };
+
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', init, { once: true });
     } else {
@@ -8077,17 +8486,15 @@ try {
 }
 
 
-  window.__qbTmBankStorage = { mergeRemoteBankIntoLocal, answerKeyGetAll, flushNow };
-  window.__qbTmReloadConfig = loadConfig;
-  const qbTmHarvesterGearTimer = setInterval(() => {
-    const header = document.getElementById('qb-hud-header');
-    if (header) {
-      qbTmAddGearButton(header);
-      clearInterval(qbTmHarvesterGearTimer);
-    }
-  }, 250);
-  })();
-}
+      const qbTmHarvesterGearTimer = setInterval(() => {
+        const header = window.__qbHarvesterHeader || document.getElementById('qb-hud-header');
+        if (header) {
+          qbTmAddGearButton(header);
+          clearInterval(qbTmHarvesterGearTimer);
+        }
+      }, 250);
+    })();
+  }
 
 ;
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -13014,5 +13421,6 @@ try {
 }
 
 
+});
 
 })();

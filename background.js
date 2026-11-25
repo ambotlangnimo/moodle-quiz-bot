@@ -1,38 +1,94 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  background.js — Service Worker: API proxy only
-//  Exposes: provider proxies, answer-key search, and course answer harvesting
-//  No loop state held here.
+//  background.js — MV3 Service Worker: API proxy, image fetcher, GitHub sync,
+//  course harvester, update alarms, and sidepanel log buffer.
 // ─────────────────────────────────────────────────────────────────────────────
 
-importScripts('config.js', 'storage.js', 'providers.js');
+if (typeof importScripts === 'function') {
+  importScripts('config.js', 'storage.js', 'providers.js');
+}
 
-// Track active ports for keepalive
+// Track active ports and in-flight course harvests
 const ports = new Set();
 const activeCourseHarvests = new Map();
 let _isHarvesting = false;
 let harvestQueue = Promise.resolve();
+
 const HARVEST_STOP_WORDS = new Set([
   'a', 'an', 'and', 'of', 'the', 'for', 'in', 'its', 'to', 'with',
   'introduction', 'principles', 'applications', 'fundamentals',
 ]);
-// Gemini API key rotation state. `GEMINI_API_KEY` accepts comma/newline/space
-// separated backup keys; a key that answers HTTP 429 (or a quota 403) is put on
-// cooldown and the next ready key handles the request, so one exhausted free key
-// never takes Gemini out of the fallback chain.
-const _geminiKeyState = new Map(); // key -> { limitedUntil, invalidUntil }
-let _geminiKeyCursor = 0;
-chrome.runtime.onConnect.addListener((port) => {
-  ports.add(port);
-  port.onDisconnect.addListener(() => ports.delete(port));
-});
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!ports.size) setTimeout(() => {}, 20000);
-  handleMessage(message, sender)
-    .then((result) => sendResponse(result))
-    .catch((error) => sendResponse({ error: error.message, _reqId: message._reqId }));
-  return true;
-});
+// Gemini API key rotation state persisted in chrome.storage.session when
+// available so MV3 worker restarts do not forget cooling/invalid keys.
+const GEMINI_STATE_SESSION_KEY = '_gemini_key_state';
+let _geminiKeyState = {};
+let _geminiKeyCursor = 0;
+let _geminiStateLoaded = false;
+
+async function loadGeminiKeyState() {
+  if (_geminiStateLoaded) return _geminiKeyState;
+  _geminiStateLoaded = true;
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      const data = await chrome.storage.session.get([GEMINI_STATE_SESSION_KEY, '_gemini_key_cursor']);
+      if (data && typeof data[GEMINI_STATE_SESSION_KEY] === 'object' && data[GEMINI_STATE_SESSION_KEY]) {
+        _geminiKeyState = { ...data[GEMINI_STATE_SESSION_KEY] };
+      }
+      if (typeof data?._gemini_key_cursor === 'number') {
+        _geminiKeyCursor = data._gemini_key_cursor;
+      }
+    }
+  } catch (error) { /* session storage optional */ }
+  return _geminiKeyState;
+}
+
+async function persistGeminiKeyState() {
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      await chrome.storage.session.set({
+        [GEMINI_STATE_SESSION_KEY]: _geminiKeyState,
+        _gemini_key_cursor: _geminiKeyCursor,
+      });
+    }
+  } catch (error) { /* non-fatal */ }
+}
+
+// Sidepanel ring buffer (persisted to chrome.storage.local._sidepanel_log)
+const SIDEPANEL_LOG_MAX = 250;
+let _sidepanelLogQueue = Promise.resolve();
+
+function appendSidepanelLog(level, text) {
+  const stamp = new Date().toLocaleTimeString();
+  const entry = `[${stamp}] [${String(level || 'info').toUpperCase()}] ${String(text || '')}`;
+  _sidepanelLogQueue = _sidepanelLogQueue.then(async () => {
+    try {
+      const stored = await chrome.storage.local.get('_sidepanel_log');
+      const lines = Array.isArray(stored._sidepanel_log) ? stored._sidepanel_log.slice() : [];
+      lines.push(entry);
+      if (lines.length > SIDEPANEL_LOG_MAX) {
+        lines.splice(0, lines.length - SIDEPANEL_LOG_MAX);
+      }
+      await chrome.storage.local.set({ _sidepanel_log: lines });
+    } catch (error) { /* non-fatal */ }
+  });
+  return _sidepanelLogQueue;
+}
+
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onConnect) {
+  chrome.runtime.onConnect.addListener((port) => {
+    ports.add(port);
+    port.onDisconnect.addListener(() => ports.delete(port));
+  });
+}
+
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    handleMessage(message, sender)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ error: error.message, _reqId: message && message._reqId }));
+    return true;
+  });
+}
 
 function stripHtml(text) {
   return (text || '')
@@ -52,7 +108,7 @@ function stripHtml(text) {
 function parseAnswerKeyHtml(html, maxHits) {
   const hits = [];
   const seen = new Set();
-  const blocks = html.split('class="card mb-2 bg-secondary"');
+  const blocks = String(html || '').split('class="card mb-2 bg-secondary"');
   for (let i = 1; i < blocks.length && hits.length < maxHits; i++) {
     const block = blocks[i];
     const questionMatch = block.match(/class="mb-2">([\s\S]*?)<\/div>/);
@@ -235,8 +291,7 @@ async function fetchCourseDetails(courseUrl) {
   } catch (error) {
     throw new Error('A valid Moodle course URL is required to resolve the subject title.');
   }
-  // .includes() so term-prefixed course paths (e.g. /2612/course/view.php) are accepted.
-  if (!/(^|\.)amaes\.com$/i.test(url.hostname) || !url.pathname.includes('/course/view.php')) {
+  if (!moodleAllowedHost(url.hostname) || !url.pathname.includes('/course/view.php')) {
     throw new Error('Refusing to fetch an untrusted course URL.');
   }
   const controller = new AbortController();
@@ -328,10 +383,10 @@ async function resolveCourseHarvestInfo(message, courseId, sender) {
       for (const topic of details.topics) addTopic(topic);
       for (const topic of Array.isArray(topicMap[courseId]) ? topicMap[courseId] : []) addTopic(topic);
       for (const topic of suppliedTopics) addTopic(topic);
-      if (title) {
-        if (courseId) titleMap[courseId] = title;
-        if (courseId) topicMap[courseId] = topics.slice(0, 5);
-        if (courseId) await chrome.storage.local.set({ courseTitlesMap: titleMap, courseTopicsMap: topicMap });
+      if (title && courseId) {
+        titleMap[courseId] = title;
+        topicMap[courseId] = topics.slice(0, 5);
+        await chrome.storage.local.set({ courseTitlesMap: titleMap, courseTopicsMap: topicMap });
       }
     } catch (error) {
       if (!title) throw error;
@@ -489,16 +544,12 @@ function scoreAnswerKeyHit(hit, options) {
   return score;
 }
 
-/* ── Extension update checker ────────────────────────────────────────────────
-   Friends who load this folder as an unpacked extension get told about newer
-   builds published on GitHub. One plain fetch of the repo's manifest.json, a
-   semantic-version compare against chrome.runtime.getManifest().version, and
-   the answer is cached in storage.local for six hours so a waking service
-   worker can never hammer raw.githubusercontent.com. */
+/* ── Extension update checker (backed by MV3 chrome.alarms) ──────────────── */
 const UPDATE_REPO_URL = 'https://github.com/ambotlangnimo/moodle-quiz-bot';
 const UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/ambotlangnimo/moodle-quiz-bot/main/manifest.json';
 const UPDATE_DOWNLOAD_URL = 'https://github.com/ambotlangnimo/moodle-quiz-bot/archive/refs/heads/main.zip';
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const UPDATE_ALARM_NAME = 'moodle-quiz-bot-update-check';
 const UPDATE_FETCH_TIMEOUT_MS = 8000;
 const UPDATE_CACHE_KEY = 'EXTENSION_UPDATE_STATUS';
 let _updateCheckInFlight = null;
@@ -538,7 +589,7 @@ function writeUpdateCache(value) {
   return new Promise((resolve) => {
     try {
       chrome.storage.local.set({ [UPDATE_CACHE_KEY]: value }, () => {
-        void chrome.runtime.lastError; // storage failures are never fatal here
+        void chrome.runtime.lastError;
         resolve();
       });
     } catch (error) {
@@ -547,8 +598,6 @@ function writeUpdateCache(value) {
   });
 }
 
-// Normalised shape handed to content.js / options.js. `error` only appears when
-// the GitHub lookup itself failed, so callers can tell "up to date" from "offline".
 function updateResultFor(result) {
   const current = result.currentVersion || installedVersion();
   const latest = String(result.latestVersion || current).replace(/^v/i, '') || current;
@@ -565,7 +614,14 @@ function updateResultFor(result) {
 
 function broadcastUpdateAvailable(result) {
   try {
-    chrome.tabs.query({ url: ['https://*.amaes.com/*'] }, (tabs) => {
+    const urlPatterns = ['https://*.amaes.com/*'];
+    try {
+      const configuredHost = new URL(String(cfg('MOODLE_URL') || '')).hostname;
+      if (configuredHost && !configuredHost.endsWith('amaes.com')) {
+        urlPatterns.push(`https://${configuredHost}/*`, `http://${configuredHost}/*`);
+      }
+    } catch (error) { /* ignore malformed MOODLE_URL */ }
+    chrome.tabs.query({ url: urlPatterns }, (tabs) => {
       if (chrome.runtime.lastError) return;
       for (const tab of tabs || []) {
         if (!tab || tab.id == null) continue;
@@ -579,7 +635,7 @@ function broadcastUpdateAvailable(result) {
         }, () => { void chrome.runtime.lastError; });
       }
     });
-  } catch (error) { /* page closed mid-broadcast: ignore */ }
+  } catch (error) { /* ignore */ }
 }
 
 function installedVersion() {
@@ -590,7 +646,6 @@ function installedVersion() {
   }
 }
 
-// "v3.0.1-beta+7" -> [3, 0, 1]; anything non-numeric counts as 0.
 function versionParts(value) {
   const clean = String(value || '').trim().replace(/^v/i, '');
   const core = clean.split(/[+-]/)[0] || '';
@@ -600,7 +655,6 @@ function versionParts(value) {
   });
 }
 
-// Semantic comparison: true only when `remote` is strictly newer than `local`.
 function isNewerVersion(remote, local) {
   const a = versionParts(remote);
   const b = versionParts(local);
@@ -628,7 +682,7 @@ async function runExtensionUpdateCheck() {
     const latest = await fetchLatestVersionFromGitHub();
     result.latestVersion = latest.replace(/^v/i, '');
     result.updateAvailable = isNewerVersion(latest, current);
-    result.checkedAt = Date.now(); // only successful lookups reset the 6-hour window
+    result.checkedAt = Date.now();
   } catch (error) {
     result.error = (error && error.message) || String(error);
   }
@@ -638,7 +692,6 @@ async function runExtensionUpdateCheck() {
   return publicResult;
 }
 
-// force = true bypasses the cache ("Check for Updates" in the options page).
 function getExtensionUpdateStatus(force) {
   if (force) return runExtensionUpdateCheck();
   if (_updateCheckInFlight) return _updateCheckInFlight;
@@ -652,23 +705,323 @@ function getExtensionUpdateStatus(force) {
   return _updateCheckInFlight;
 }
 
-// One automatic check every 6 hours (the storage cache keeps that window honest
-// when MV3 suspends this worker in between) plus a fresh one on install/startup.
+function scheduleUpdateAlarm() {
+  try {
+    if (chrome.alarms && typeof chrome.alarms.create === 'function') {
+      chrome.alarms.create(UPDATE_ALARM_NAME, { periodInMinutes: 360 });
+    }
+  } catch (error) { /* alarms unavailable */ }
+}
+
+function ensureDefaultBankSeeded() {
+  return seedDefaultBank(false).catch((error) => {
+    console.warn('[background] default_bank.json seed skipped:', error && error.message ? error.message : error);
+  });
+}
+
 try {
-  chrome.runtime.onInstalled.addListener(() => { getExtensionUpdateStatus(false).catch(() => {}); });
-  chrome.runtime.onStartup.addListener(() => { getExtensionUpdateStatus(false).catch(() => {}); });
-} catch (error) { /* older runtimes: the CHECK_EXTENSION_UPDATE handler still works */ }
-setInterval(() => { runExtensionUpdateCheck().catch(() => {}); }, UPDATE_CHECK_INTERVAL_MS);
+  if (chrome.runtime && chrome.runtime.onInstalled) {
+    chrome.runtime.onInstalled.addListener(() => {
+      scheduleUpdateAlarm();
+      ensureDefaultBankSeeded();
+      getExtensionUpdateStatus(false).catch(() => {});
+    });
+  }
+  if (chrome.runtime && chrome.runtime.onStartup) {
+    chrome.runtime.onStartup.addListener(() => {
+      scheduleUpdateAlarm();
+      ensureDefaultBankSeeded();
+      getExtensionUpdateStatus(false).catch(() => {});
+    });
+  }
+  if (chrome.alarms && chrome.alarms.onAlarm) {
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm && alarm.name === UPDATE_ALARM_NAME) {
+        getExtensionUpdateStatus(false).catch(() => {});
+      }
+    });
+  }
+} catch (error) { /* non-extension test environment */ }
+
+// ── GitHub bank merge & conflict-safe sync (top-level helper) ──────────────
+async function buildMergedGitHubBank(remoteContent) {
+  const remote = remoteContent && typeof remoteContent === 'object' && !Array.isArray(remoteContent)
+    ? remoteContent
+    : {};
+  const pulled = await mergeRemoteBankIntoLocal(remote);
+
+  const wrapper = (remote.questions && typeof remote.questions === 'object' && !Array.isArray(remote.questions))
+    ? remote
+    : null;
+  const questions = wrapper ? { ...wrapper.questions } : { ...remote };
+
+  await flushNow();
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.ANSWER_KEY);
+  const local = validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {});
+  const signature = (key, hit) => normText(hit.question || key) + '|' + normText(hit.answer);
+
+  const remoteKeyByNorm = new Map();
+  for (const rawKey of Object.keys(questions)) {
+    if (BANK_META_KEYS.has(rawKey)) continue;
+    remoteKeyByNorm.set(normText(rawKey), rawKey);
+  }
+
+  for (const [key, entry] of Object.entries(local)) {
+    if (!key || !Array.isArray(entry) || !Array.isArray(entry[1])) continue;
+    const wanted = entry[1].filter((hit) => hit && hit.answer && hit.verified === true).map((hit) => ({
+      question: hit.question || key,
+      answer: hit.answer,
+      course: hit.course || 'learned-review',
+      verified: true,
+    }));
+    if (!wanted.length) continue;
+
+    const targetKey = remoteKeyByNorm.get(key) || key;
+    const existing = questions[targetKey] ? normalizeAnswerEntry(targetKey, questions[targetKey]) : null;
+    const hits = existing ? existing[1].slice() : [];
+    const seen = new Set(hits.map((hit) => signature(targetKey, hit)));
+    for (const hit of wanted) {
+      const sig = signature(targetKey, hit);
+      if (seen.has(sig)) continue;
+      seen.add(sig);
+      hits.push(hit);
+    }
+    if (hits.length) {
+      const ts = Math.max(existing ? existing[0] : 0, entry[0] || 0, Date.now() / 1000);
+      questions[targetKey] = [ts, hits];
+      remoteKeyByNorm.set(key, targetKey);
+    }
+  }
+
+  const bankObj = wrapper
+    ? { ...wrapper, questions, updatedAt: new Date().toISOString() }
+    : questions;
+  const pushedCount = Object.keys(questions).filter((key) => !BANK_META_KEYS.has(key)).length;
+  return { bankObj, pulledAdded: pulled.added, pushedCount };
+}
+
+async function syncGitHubBank(owner, repo, path, token) {
+  try {
+    let meta;
+    try {
+      meta = await gitHubGetFile(owner, repo, path, token);
+    } catch (err) {
+      return { error: `Network error: ${err.message}` };
+    }
+
+    if (!meta.missing && (!meta.content || typeof meta.content !== 'object' || Array.isArray(meta.content))) {
+      const detail = meta.parseError
+        ? `: ${meta.parseError}`
+        : (meta.content ? ': expected a JSON object at the top level' : '');
+      return { error: `Could not read ${path} from ${owner}/${repo}${detail}` };
+    }
+
+    let merged = await buildMergedGitHubBank(meta.content || {});
+    const commitMsg = 'Moodle Quiz Bot: auto-sync from extension';
+    const put = await gitHubPutJson(
+      owner,
+      repo,
+      path,
+      token,
+      merged.bankObj,
+      commitMsg,
+      meta.sha,
+      async (latestMeta) => {
+        merged = await buildMergedGitHubBank((latestMeta && latestMeta.content) || {});
+        return merged.bankObj;
+      }
+    );
+    if (!put.ok) {
+      return { error: `GitHub PUT failed: ${put.status} ${put.message || ''}` };
+    }
+
+    return {
+      status: 'ok',
+      added: merged.pulledAdded,
+      pushed: merged.pushedCount,
+    };
+  } catch (err) {
+    return { error: `Sync failed: ${err.message}` };
+  }
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function resolveCustomModelId() {
+  const baseUrl = String(cfg('CUSTOM_API_BASE_URL') || 'https://api.freellmapi.com/v1').replace(/\/+$/, '');
+  const apiKey = cfg('CUSTOM_API_KEY');
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const modelResponse = await fetchJsonWithTimeout(`${baseUrl}/models`, { headers }, 10000);
+    if (!modelResponse.ok) return null;
+    const modelData = await modelResponse.json();
+    const models = modelData?.data || modelData?.models || [];
+    for (const m of models) {
+      const id = m && (m.id || m.name || m.model);
+      if (id && typeof id === 'string') return id;
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function fetchImageAsBase64(imageUrl, timeoutMs = 10000) {
+  const MAX_BYTES = 4 * 1024 * 1024;
+  let parsed;
+  try {
+    parsed = new URL(imageUrl);
+  } catch (error) {
+    throw new Error('Invalid image URL');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Unsupported image protocol');
+  }
+  const credentials = moodleAllowedHost(parsed.hostname) ? 'include' : 'omit';
+  const response = await fetchJsonWithTimeout(parsed.href, { credentials }, timeoutMs);
+  if (!response.ok) throw new Error(`Image HTTP ${response.status}`);
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength || buffer.byteLength > MAX_BYTES) {
+    throw new Error('Image empty or exceeds 4 MB limit');
+  }
+  const bytes = new Uint8Array(buffer);
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  const contentType = String(response.headers.get('content-type') || 'image/png').split(';')[0].trim();
+  const mimeType = contentType.startsWith('image/') ? contentType : 'image/png';
+  return { base64: btoa(binary), mimeType };
+}
+
+function buildSearchDomainsPrefix() {
+  const raw = String(cfg('WEB_SEARCH_DOMAINS') || 'amauoed.com,quizlet.com,studocu.com');
+  const domains = raw
+    .split(/[\s,;]+/)
+    .map((d) => d.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, ''))
+    .filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d));
+  const list = domains.length ? domains : ['amauoed.com', 'quizlet.com', 'studocu.com'];
+  return list.map((domain) => `site:${domain}`).join(' OR ');
+}
+
+async function testConfiguredProviders() {
+  const results = {};
+
+  // 1) Custom / FreeLLMAPI
+  const customKey = String(cfg('CUSTOM_API_KEY') || '').trim();
+  const customBase = String(cfg('CUSTOM_API_BASE_URL') || '').replace(/\/+$/, '');
+  if (!customKey) {
+    results.custom = { ok: false, status: 'not_configured', detail: 'No API key set' };
+  } else {
+    try {
+      const resp = await fetchJsonWithTimeout(`${customBase}/models`, {
+        headers: { Authorization: `Bearer ${customKey}` },
+      }, 8000);
+      results.custom = resp.ok
+        ? { ok: true, status: 'ok', detail: `HTTP ${resp.status} reachable` }
+        : { ok: false, status: `http_${resp.status}`, detail: `HTTP ${resp.status}` };
+    } catch (error) {
+      results.custom = { ok: false, status: 'error', detail: error.message };
+    }
+  }
+
+  // 2) Gemini
+  const geminiKeys = String(cfg('GEMINI_API_KEY') || '').split(/[\s,;]+/).filter(Boolean);
+  if (!geminiKeys.length) {
+    results.gemini = { ok: false, status: 'not_configured', detail: 'No API key set' };
+  } else {
+    try {
+      const resp = await fetchJsonWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKeys[0])}`,
+        {},
+        8000
+      );
+      results.gemini = resp.ok
+        ? { ok: true, status: 'ok', detail: `Key 1/${geminiKeys.length} valid` }
+        : { ok: false, status: `http_${resp.status}`, detail: `HTTP ${resp.status}` };
+    } catch (error) {
+      results.gemini = { ok: false, status: 'error', detail: error.message };
+    }
+  }
+
+  // 3) OpenRouter
+  const orKey = String(cfg('OPENROUTER_API_KEY') || '').trim();
+  if (!orKey) {
+    results.openrouter = { ok: false, status: 'not_configured', detail: 'No API key set' };
+  } else {
+    try {
+      const resp = await fetchJsonWithTimeout('https://openrouter.ai/api/v1/auth/key', {
+        headers: { Authorization: `Bearer ${orKey}` },
+      }, 8000);
+      results.openrouter = resp.ok
+        ? { ok: true, status: 'ok', detail: 'API key valid' }
+        : { ok: false, status: `http_${resp.status}`, detail: `HTTP ${resp.status}` };
+    } catch (error) {
+      results.openrouter = { ok: false, status: 'error', detail: error.message };
+    }
+  }
+
+  // 4) Ollama
+  try {
+    const resp = await fetchJsonWithTimeout(`${cfg('OLLAMA_URL')}/api/tags`, {}, 3000);
+    if (resp.ok) {
+      const json = await resp.json().catch(() => ({}));
+      const count = Array.isArray(json.models) ? json.models.length : 0;
+      results.ollama = { ok: true, status: 'ok', detail: `Running (${count} model${count === 1 ? '' : 's'})` };
+    } else {
+      results.ollama = { ok: false, status: `http_${resp.status}`, detail: `HTTP ${resp.status}` };
+    }
+  } catch (error) {
+    results.ollama = { ok: false, status: 'offline', detail: 'Not reachable' };
+  }
+
+  return results;
+}
 
 async function handleMessage(message, sender) {
   await configReady;
-  const action = message.action || message.type;
-  const payload = message.payload || (action === 'AUTO_HARVEST' ? message : {});
-  const { _reqId } = message;
+  const action = message && (message.action || message.type);
+  const payload = (message && message.payload) || (action === 'AUTO_HARVEST' ? message : {});
+  const _reqId = message && message._reqId;
 
   switch (action) {
+    case 'log': {
+      await appendSidepanelLog(message.level || payload.level || 'info', message.text || payload.text || '');
+      return { _reqId, ok: true };
+    }
+
     case 'AUTO_HARVEST':
       return await autoHarvestCourse(payload, sender);
+
+    case 'resolveCustomModel': {
+      const model = await resolveCustomModelId();
+      return { _reqId, model };
+    }
+
+    case 'fetchImageBase64': {
+      try {
+        const result = await fetchImageAsBase64(payload.url, payload.timeout || 10000);
+        return { _reqId, ...result };
+      } catch (error) {
+        return { _reqId, error: error.message };
+      }
+    }
+
+    case 'testProviders': {
+      const results = await testConfiguredProviders();
+      return { _reqId, results };
+    }
 
     case 'postOpenRouter': {
       const { body, timeout } = payload;
@@ -703,6 +1056,7 @@ async function handleMessage(message, sender) {
     }
 
     case 'postGemini': {
+      await loadGeminiKeyState();
       const { contents, generationConfig, timeout } = payload;
       const keys = String(cfg('GEMINI_API_KEY') || '')
         .split(/[\s,;]+/)
@@ -710,10 +1064,7 @@ async function handleMessage(message, sender) {
         .filter(Boolean);
       if (!keys.length) return { _reqId, error: 'Gemini API key is missing' };
       const configuredModel = String(payload.model || cfg('GEMINI_MODEL') || '').trim();
-      const model = !configuredModel || configuredModel === 'gemini-2.5-flash'
-        ? 'gemini-3.8-flash'
-        : configuredModel;
-      if (model !== cfg('GEMINI_MODEL')) await saveConfig({ GEMINI_MODEL: model });
+      const model = configuredModel || DEFAULTS.GEMINI_MODEL;
 
       const now = Date.now();
       const cooldownMs = (Number(cfg('GEMINI_KEY_COOLDOWN')) ||
@@ -728,7 +1079,7 @@ async function handleMessage(message, sender) {
       let lastError = '';
       for (const keyIndex of order) {
         const key = keys[keyIndex];
-        const state = _geminiKeyState.get(key) || {};
+        const state = _geminiKeyState[key] || {};
         if ((state.limitedUntil && state.limitedUntil > now) ||
             (state.invalidUntil && state.invalidUntil > now)) continue;
         tried += 1;
@@ -750,6 +1101,7 @@ async function handleMessage(message, sender) {
               .join('')
               .trim();
             _geminiKeyCursor = (keyIndex + 1) % keys.length;
+            await persistGeminiKeyState();
             return { _reqId, text, keyIndex: keyIndex + 1, keyCount: keys.length };
           }
           const body = await response.text().catch(() => '');
@@ -760,11 +1112,13 @@ async function handleMessage(message, sender) {
           const invalid = response.status === 401 ||
             (response.status === 400 && /api[ _-]?key not valid|invalid api key/i.test(body));
           if (quota) {
-            _geminiKeyState.set(key, { ...state, limitedUntil: now + cooldownMs });
+            _geminiKeyState[key] = { ...state, limitedUntil: now + cooldownMs };
+            await persistGeminiKeyState();
             continue;
           }
           if (invalid) {
-            _geminiKeyState.set(key, { ...state, invalidUntil: now + 24 * 60 * 60 * 1000 });
+            _geminiKeyState[key] = { ...state, invalidUntil: now + 24 * 60 * 60 * 1000 };
+            await persistGeminiKeyState();
             continue;
           }
           return { _reqId, status: response.status, error: lastError, keyIndex: keyIndex + 1, keyCount: keys.length };
@@ -806,7 +1160,7 @@ async function handleMessage(message, sender) {
         options: {
           ...ollamaOptions,
           temperature: Number(ollamaOptions.temperature) || 0.1,
-          num_ctx: parseInt(cfg('OLLAMA_NUM_CTX'), 10) || 16384,
+          num_ctx: parseInt(cfg('OLLAMA_NUM_CTX'), 10) || DEFAULTS.OLLAMA_NUM_CTX,
         },
       };
       const controller = new AbortController();
@@ -839,12 +1193,8 @@ async function handleMessage(message, sender) {
       if (!customApiBaseUrl) return { _reqId, error: 'Custom API base URL is not configured' };
       const baseUrl = customApiBaseUrl.replace(/\/$/, '');
       const url = `${baseUrl}/chat/completions`;
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      if (customApiKey) {
-        headers['Authorization'] = `Bearer ${customApiKey}`;
-      }
+      const headers = { 'Content-Type': 'application/json' };
+      if (customApiKey) headers['Authorization'] = `Bearer ${customApiKey}`;
       const isAutoModel = !body.model || body.model === 'auto';
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout || 25000);
@@ -859,34 +1209,20 @@ async function handleMessage(message, sender) {
         if (response.status === 401) return { _reqId, status: 401, error: 'Invalid API key (HTTP 401)' };
         if (response.status === 402) return { _reqId, status: 402, error: 'Insufficient credits (HTTP 402)' };
         if (!response.ok && isAutoModel && (response.status === 400 || response.status === 404)) {
-          const modelUrl = `${baseUrl}/models`;
-          try {
-            const modelResponse = await fetch(modelUrl, { headers, timeout: 10000 });
-            if (modelResponse.ok) {
-              const modelData = await modelResponse.json();
-              const models = modelData?.data || modelData?.models || [];
-              let resolvedModel = null;
-              for (const m of models) {
-                const id = m.id || m.name || m.model;
-                if (id && typeof id === 'string') {
-                  resolvedModel = id;
-                  break;
-                }
-              }
-              if (resolvedModel) {
-                body.model = resolvedModel;
-                const retryController = new AbortController();
-                const retryTimer = setTimeout(() => retryController.abort(), timeout || 25000);
-                response = await fetch(url, {
-                  method: 'POST', headers,
-                  body: JSON.stringify(body),
-                  signal: retryController.signal,
-                });
-                clearTimeout(retryTimer);
-              }
+          const resolvedModel = await resolveCustomModelId();
+          if (resolvedModel) {
+            body.model = resolvedModel;
+            const retryController = new AbortController();
+            const retryTimer = setTimeout(() => retryController.abort(), timeout || 25000);
+            try {
+              response = await fetch(url, {
+                method: 'POST', headers,
+                body: JSON.stringify(body),
+                signal: retryController.signal,
+              });
+            } finally {
+              clearTimeout(retryTimer);
             }
-          } catch (modelErr) {
-            console.warn('[postCustomApi] Failed to resolve model from /models:', modelErr.message);
           }
         }
         if (response.status === 429) return { _reqId, status: 429, error: 'Rate limited (HTTP 429)' };
@@ -904,143 +1240,42 @@ async function handleMessage(message, sender) {
       }
     }
 
-    async function syncGitHubBank(owner, repo, path, token) {
-      try {
-        // 1) Always GET metadata first so we have the current `sha` (required for updates).
-        let meta;
+    case 'getAnswerKey': {
+      const { question, options = [] } = payload;
+      const maxHits = cfg('ANSWER_KEY_MAX_HITS') || 4;
+      const search = async (term) => {
+        const url = `https://amauoed.com/search?query=${encodeURIComponent(term.slice(0, 300))}`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), (cfg('ANSWER_KEY_TIMEOUT') || 4) * 1000);
         try {
-          meta = await gitHubGetFile(owner, repo, path, token);
-        } catch (err) {
-          return { error: `Network error: ${err.message}` };
+          const response = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AmaBot/1.0)' },
+            signal: controller.signal,
+          });
+          return response.ok ? parseAnswerKeyHtml(await response.text(), maxHits) : [];
+        } finally {
+          clearTimeout(timer);
         }
-
-        // A bank that exists but could not be read (e.g. GitHub omitted the
-        // inline content for a file over 1 MB and the blob/raw fallback failed,
-        // or the JSON is malformed) must never be treated as empty: pushing in
-        // that state would overwrite the remote questions with the local ones.
-        if (!meta.missing && (!meta.content || typeof meta.content !== 'object' || Array.isArray(meta.content))) {
-          const detail = meta.parseError
-            ? `: ${meta.parseError}`
-            : (meta.content ? ': expected a JSON object at the top level' : '');
-          return { error: `Could not read ${path} from ${owner}/${repo}${detail}` };
-        }
-
-        // 2) Pull first: bank.json may be a bare question map or wrapped in
-        //    { "questions": { ... }, "updatedAt": "..." }. Unwrap it and merge every
-        //    remote question into chrome.storage.local so those answers are usable
-        //    locally before the push below. A missing file (404) starts empty.
-        const remote = meta.content || {};
-        const pulled = await mergeRemoteBankIntoLocal(remote);
-
-        // 3) Merge the remote bank with locally learned (verified) answers.
-        const wrapper = (remote.questions && typeof remote.questions === 'object' && !Array.isArray(remote.questions))
-          ? remote
-          : null;
-        const questions = wrapper ? { ...wrapper.questions } : { ...remote };
-
-        // Read the freshest local answers directly from storage (all contexts share it).
-        await flushNow();
-        const stored = await chrome.storage.local.get(STORAGE_KEYS.ANSWER_KEY);
-        const local = validateAnswerKey(stored[STORAGE_KEYS.ANSWER_KEY] || {});
-        const signature = (key, hit) => normText(hit.question || key) + '|' + normText(hit.answer);
-        // normalized question text -> key spelling already used on GitHub, so merging
-        // never adds a second (lower-cased) copy of a question the bank already holds.
-        const remoteKeyByNorm = new Map();
-        for (const rawKey of Object.keys(questions)) {
-          if (BANK_META_KEYS.has(rawKey)) continue;
-          remoteKeyByNorm.set(normText(rawKey), rawKey);
-        }
-
-        for (const [key, entry] of Object.entries(local)) {
-          if (!key || !Array.isArray(entry) || !Array.isArray(entry[1])) continue;
-          const wanted = entry[1].filter((hit) => hit && hit.answer && hit.verified === true).map((hit) => ({
-            question: hit.question || key,
-            answer: hit.answer,
-            course: hit.course || 'learned-review',
-            verified: true,
-          }));
-          if (!wanted.length) continue;
-
-          const targetKey = remoteKeyByNorm.get(key) || key;
-          const existing = questions[targetKey] ? normalizeAnswerEntry(targetKey, questions[targetKey]) : null;
-          const hits = existing ? existing[1].slice() : [];
-          const seen = new Set(hits.map((hit) => signature(targetKey, hit)));
-          for (const hit of wanted) {
-            const sig = signature(targetKey, hit);
-            if (seen.has(sig)) continue;
-            seen.add(sig);
-            hits.push(hit);
-          }
-          if (hits.length) {
-            const ts = Math.max(existing ? existing[0] : 0, entry[0] || 0, Date.now() / 1000);
-            questions[targetKey] = [ts, hits];
-            remoteKeyByNorm.set(key, targetKey);
+      };
+      try {
+        let hits = await search((question || '').slice(0, 300));
+        if (!hits.length) {
+          const fallback = fallbackQuestionQuery(question);
+          if (fallback && fallback.toLowerCase() !== (question || '').toLowerCase()) {
+            hits = await search(fallback);
           }
         }
-
-        const bankObj = wrapper
-          ? { ...wrapper, questions, updatedAt: new Date().toISOString() }
-          : questions;
-
-        // 4) PUT with `sha` (omitted only for a brand-new file), retrying once on a stale sha.
-        const commitMsg = 'Moodle Quiz Bot: auto-sync from extension';
-        const put = await gitHubPutJson(owner, repo, path, token, bankObj, commitMsg, meta.sha);
-        if (!put.ok) {
-          return { error: `GitHub PUT failed: ${put.status} ${put.message || ''}` };
-        }
-
         return {
-          status: 'ok',
-          added: pulled.added,
-          pushed: Object.keys(questions).filter((key) => !BANK_META_KEYS.has(key)).length,
+          _reqId,
+          hits: hits.map((hit) => ({ ...hit, optionScore: scoreAnswerKeyHit(hit, options) }))
+            .sort((a, b) => b.optionScore - a.optionScore),
         };
       } catch (err) {
-        return { error: `Sync failed: ${err.message}` };
+        return { _reqId, hits: [] };
       }
-    }
-
-case 'getAnswerKey': {
-  const { question, options = [] } = payload;
-  const maxHits = cfg('ANSWER_KEY_MAX_HITS') || 4;
-  const search = async (term) => {
-    const url = `https://amauoed.com/search?query=${encodeURIComponent(term.slice(0, 300))}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), (cfg('ANSWER_KEY_TIMEOUT') || 4) * 1000);
-    try {
-      const response = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AmaBot/1.0)' },
-        signal: controller.signal,
-      });
-      return response.ok ? parseAnswerKeyHtml(await response.text(), maxHits) : [];
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-  try {
-    let hits = await search((question || '').slice(0, 300));
-    if (!hits.length) {
-      const fallback = fallbackQuestionQuery(question);
-      if (fallback && fallback.toLowerCase() !== (question || '').toLowerCase()) {
-        hits = await search(fallback);
-      }
-    }
-    return {
-      _reqId,
-      hits: hits.map((hit) => ({ ...hit, optionScore: scoreAnswerKeyHit(hit, options) }))
-        .sort((a, b) => b.optionScore - a.optionScore),
-    };
-  } catch (err) {
-    return { _reqId, hits: [] };
-  }
     }
 
     case 'SEARCH_WEB_SNIPPETS': {
-      // Fast, best-effort DuckDuckGo scrape used by askAiText() as a last hint
-      // source for short-answer questions missing from both the local bank and
-      // amauoed.com. Hard 4 s cap; any failure (network error, abort/timeout,
-      // anti-bot page, empty HTML) resolves with text: '' so the AI stage in
-      // providers.js runs exactly as it did before — nothing is ever thrown
-      // back at the caller.
       const { query, maxResults } = payload;
       const term = String(query || '').replace(/\s+/g, ' ').trim();
       if (!term) return { _reqId, text: '' };
@@ -1075,35 +1310,35 @@ case 'getAnswerKey': {
 
     case 'searchWeb': {
       const { query, maxResults } = payload;
-  const limit = maxResults || 3;
-  const snippets = [];
+      const limit = maxResults || 3;
+      const snippets = [];
       try {
-    const searchQuery = `site:amauoed.com OR site:quizlet.com OR site:studocu.com ${query}`;
-    const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
-    const ddgController = new AbortController();
-    const ddgTimer = setTimeout(() => ddgController.abort(), 8000);
-    try {
-      const ddgResponse = await fetch(ddgUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuizStudyBot/1.0)' },
-        signal: ddgController.signal,
-      });
-      if (ddgResponse.ok) {
-        const html = await ddgResponse.text();
-        const blocks = html.split(/<div[^>]*class=["'][^"']*\bresult\b[^"']*["'][^>]*>/i).slice(1);
-        for (const block of blocks) {
-          if (snippets.length >= limit) break;
-          const titleMatch = block.match(/<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-          const snippetMatch = block.match(/<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i);
-          const title = titleMatch ? stripHtml(titleMatch[1]) : '';
-          const snippet = snippetMatch ? stripHtml(snippetMatch[1]).slice(0, 900) : '';
-          if (snippet) snippets.push(`Title: ${title}\nContent: ${snippet}`);
+        const searchQuery = `${buildSearchDomainsPrefix()} ${query}`;
+        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+        const ddgController = new AbortController();
+        const ddgTimer = setTimeout(() => ddgController.abort(), 8000);
+        try {
+          const ddgResponse = await fetch(ddgUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QuizStudyBot/1.0)' },
+            signal: ddgController.signal,
+          });
+          if (ddgResponse.ok) {
+            const html = await ddgResponse.text();
+            const blocks = html.split(/<div[^>]*class=["'][^"']*\bresult\b[^"']*["'][^>]*>/i).slice(1);
+            for (const block of blocks) {
+              if (snippets.length >= limit) break;
+              const titleMatch = block.match(/<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+              const snippetMatch = block.match(/<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/i);
+              const title = titleMatch ? stripHtml(titleMatch[1]) : '';
+              const snippet = snippetMatch ? stripHtml(snippetMatch[1]).slice(0, 900) : '';
+              if (snippet) snippets.push(`Title: ${title}\nContent: ${snippet}`);
+            }
+          }
+        } catch (err) {
+          console.warn('[searchWeb] DuckDuckGo search failed:', err.message);
+        } finally {
+          clearTimeout(ddgTimer);
         }
-      }
-    } catch (err) {
-      console.warn('[searchWeb] DuckDuckGo search failed:', err.message);
-    } finally {
-      clearTimeout(ddgTimer);
-    }
 
         const encoded = encodeURIComponent(query);
         const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encoded}&utf8=1&format=json`;
@@ -1135,10 +1370,7 @@ case 'getAnswerKey': {
 
     case 'checkOllama': {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 2000);
-        const response = await fetch(`${cfg('OLLAMA_URL')}/api/tags`, { signal: controller.signal });
-        clearTimeout(timer);
+        const response = await fetchJsonWithTimeout(`${cfg('OLLAMA_URL')}/api/tags`, {}, 2000);
         return { _reqId, ok: response.ok };
       } catch (err) {
         return { _reqId, ok: false };
@@ -1149,8 +1381,6 @@ case 'getAnswerKey': {
       const owner = String(cfg('GITHUB_BANK_OWNER') || '').trim();
       const repo = String(cfg('GITHUB_BANK_REPO') || '').trim();
       const bankPath = String(cfg('GITHUB_BANK_PATH') || 'bank.json').trim() || 'bank.json';
-      // `GITHUB_SYNC_TOKEN` is the field written by the options page;
-      // `GITHUB_BANK_TOKEN` is accepted as a legacy alias.
       const token = String(cfg('GITHUB_SYNC_TOKEN') || cfg('GITHUB_BANK_TOKEN') || '').trim();
       if (!owner || !repo) return { _reqId, status: 'skipped' };
       const result = await syncGitHubBank(owner, repo, bankPath, token);
@@ -1158,15 +1388,11 @@ case 'getAnswerKey': {
     }
 
     case 'GET_CURRENT_TAB_ID': {
-      // Content scripts ask once at boot so the mascot knows which tab it lives
-      // in. `sender.tab` is only present for tab-hosted senders, so a stray call
-      // from an extension page just answers null (single-tab fallback).
       const tabId = sender && sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : null;
       return { _reqId, tabId };
     }
 
     case 'CHECK_EXTENSION_UPDATE': {
-      // Cached for 6 hours unless the caller forces a fresh GitHub lookup.
       const force = payload.force !== undefined ? !!payload.force : !!message.force;
       const status = await getExtensionUpdateStatus(force);
       return { _reqId, ...status };
@@ -1177,5 +1403,8 @@ case 'getAnswerKey': {
   }
 }
 
-// Load config on startup
-const configReady = loadConfig();
+// Load config and seed bundled default bank on worker boot.
+const configReady = loadConfig().then((merged) => {
+  ensureDefaultBankSeeded();
+  return merged;
+});

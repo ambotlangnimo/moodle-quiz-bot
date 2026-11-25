@@ -5,32 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Moodle Quiz Bot — Config</title>
 <style>
-body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; max-width: 960px; }
 h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
-.section { background: #16213e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-.section h2 { font-size: 14px; color: #60a5fa; margin: 0 0 8px; }
-.row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; align-items: center; }
-.row label { min-width: 180px; font-size: 12px; color: #94a3b8; }
-.row input[type="text"], .row input[type="number"], .row select { background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 4px 8px; color: #e0e0e0; font-size: 12px; flex: 1; min-width: 120px; }
-.row textarea { background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 4px 8px; color: #e0e0e0; font-size: 12px; flex: 1; min-width: 220px; font-family: inherit; resize: vertical; }
+.section { background: #16213e; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.section h2 { font-size: 14px; color: #60a5fa; margin: 0 0 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 7px; align-items: center; }
+.row label { min-width: 190px; font-size: 12px; color: #94a3b8; }
+.row input[type="text"], .row input[type="password"], .row input[type="number"], .row select {
+  background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 5px 8px;
+  color: #e0e0e0; font-size: 12px; flex: 1; min-width: 140px;
+}
+.row textarea {
+  background: #0f3460; border: 1px solid #1e3a5f; border-radius: 4px; padding: 5px 8px;
+  color: #e0e0e0; font-size: 12px; flex: 1; min-width: 220px; font-family: inherit; resize: vertical;
+}
 .row .hint { font-size: 11px; color: #64748b; }
 .row input[type="checkbox"] { accent-color: #e94560; }
-.btn { background: #e94560; color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+.btn { background: #e94560; color: white; border: none; border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .btn:hover { background: #d63851; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary { background: #334155; color: #e2e8f0; }
+.btn-secondary:hover { background: #475569; }
+.btn-small { padding: 4px 8px; font-size: 11px; }
 #status { margin-top: 12px; padding: 8px; border-radius: 6px; font-size: 12px; display: none; }
 #status.success { display: block; background: #065f46; color: #6ee7b7; }
 #status.error { display: block; background: #7f1d1d; color: #fca5a5; }
 .save-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
 #save-status { font-size: 13px; font-weight: 600; min-height: 16px; }
 
-/* Extension update section */
 #extVersion { font-size: 12px; color: #e0e0e0; font-weight: 600; }
-#downloadUpdateBtn {
-  background: #16a34a;
-  display: none;
-  text-decoration: none;
-  text-align: center;
-}
+#downloadUpdateBtn { background: #16a34a; display: none; text-decoration: none; text-align: center; }
 #downloadUpdateBtn.show { display: inline-block; }
 #downloadUpdateBtn:hover { background: #15803d; }
 #updateStatus { margin-top: 8px; font-size: 12px; color: #94a3b8; }
@@ -38,23 +42,24 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 #updateStatus.warn { color: #fbbf24; }
 #updateStatus.error { color: #f87171; }
 
-/* Floating toast — always visible at the user's scroll position. */
+#providerTestResults { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.provider-badge { padding: 4px 10px; border-radius: 999px; background: #0f3460; color: #cbd5e1; }
+.provider-badge.ok { background: #065f46; color: #6ee7b7; }
+.provider-badge.fail { background: #7f1d1d; color: #fca5a5; }
+
+#bankResults { margin-top: 10px; max-height: 280px; overflow-y: auto; border: 1px solid #1e3a5f; border-radius: 6px; background: #0b162c; }
+.bank-item { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #1e293b; font-size: 12px; }
+.bank-item:last-child { border-bottom: none; }
+.bank-item-body { flex: 1; min-width: 0; }
+.bank-q { color: #e2e8f0; margin-bottom: 3px; word-break: break-word; }
+.bank-a { color: #4ade80; font-weight: 600; word-break: break-word; }
+.bank-meta { font-size: 11px; color: #64748b; margin-top: 2px; }
+
 #toast {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  z-index: 9999;
-  padding: 12px 18px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #22c55e;
-  background: #065f46;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  transform: translateY(12px);
-  pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  position: fixed; bottom: 20px; right: 20px; z-index: 9999; padding: 12px 18px;
+  border-radius: 8px; font-size: 13px; font-weight: 600; color: #22c55e; background: #065f46;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); opacity: 0; transform: translateY(12px);
+  pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease;
 }
 #toast.show { opacity: 1; transform: translateY(0); }
 </style>
@@ -67,7 +72,7 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
   <div class="row">
     <label>Installed version</label>
     <span id="extVersion" aria-live="polite">Installed: v—</span>
-    <span class="hint">Checked against GitHub every 6 hours in the background.</span>
+    <span class="hint">Checked against GitHub every 6 hours via MV3 alarms.</span>
   </div>
   <div class="row">
     <button class="btn" id="checkUpdateBtn">Check for Updates</button>
@@ -77,63 +82,93 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
 </div>
 
 <div class="section">
-<h2>FreeLLMAPI / Custom OpenAI-Compatible Endpoint</h2>
-<div class="row"><label>API Base URL</label><input type="text" id="CUSTOM_API_BASE_URL" value="https://api.freellmapi.com/v1" placeholder="https://api.freellmapi.com/v1"></div>
-<div class="row"><label>API Key</label><input type="password" id="CUSTOM_API_KEY" placeholder="Optional API key"></div>
-<div class="row"><label>Model</label><input type="text" id="CUSTOM_MODEL" value="auto" placeholder="auto"></div>
+  <h2>Moodle Instance</h2>
+  <div class="row"><label>Moodle Base URL</label><input type="text" id="MOODLE_URL" placeholder="https://amaes.com"></div>
+  <div class="row"><span class="hint">API keys and tokens are stored locally only (never uploaded to browser profile sync).</span></div>
 </div>
 
 <div class="section">
-<h2>Gemini (Free AI Fallback)</h2>
-<div class="row"><label>API Keys</label><textarea id="GEMINI_API_KEY" rows="3" placeholder="One key per line, or comma-separated: key1, key2, key3"></textarea></div>
-<div class="row"><label>Key cooldown (s)</label><input type="number" id="GEMINI_KEY_COOLDOWN" value="180"></div>
-<div class="row"><span class="hint">Backup keys are rotated automatically: when one returns HTTP 429 / quota, the next ready key answers instead.</span></div>
-<div class="row"><label>Model</label><input type="text" id="GEMINI_MODEL" value="gemini-3.8-flash" readonly></div>
+  <h2>FreeLLMAPI / Custom OpenAI-Compatible Endpoint</h2>
+  <div class="row"><label>API Base URL</label><input type="text" id="CUSTOM_API_BASE_URL" placeholder="https://api.freellmapi.com/v1"></div>
+  <div class="row">
+    <label>API Key</label>
+    <input type="password" id="CUSTOM_API_KEY" placeholder="Optional API key" autocomplete="off">
+    <button type="button" class="btn btn-secondary btn-small" data-reveal="CUSTOM_API_KEY">Show</button>
+  </div>
+  <div class="row"><label>Model</label><input type="text" id="CUSTOM_MODEL" placeholder="auto"></div>
 </div>
 
 <div class="section">
-<h2>OpenRouter (Cloud AI)</h2>
-<div class="row"><label>API Key</label><input type="text" id="OPENROUTER_API_KEY" placeholder="sk-or-..."></div>
-<div class="row"><label>Model</label><input type="text" id="OPENROUTER_MODEL" value="deepseek/deepseek-v4.1-flash"></div>
-<div class="row"><label>Vision Model</label><input type="text" id="OPENROUTER_VISION_MODEL" placeholder="Optional"></div>
+  <h2>Gemini (Free AI Fallback)</h2>
+  <div class="row"><label>API Keys</label><textarea id="GEMINI_API_KEY" rows="3" placeholder="One key per line, or comma-separated: key1, key2, key3"></textarea></div>
+  <div class="row"><label>Key cooldown (s)</label><input type="number" id="GEMINI_KEY_COOLDOWN"></div>
+  <div class="row"><span class="hint">Backup keys rotate automatically on HTTP 429 / quota errors.</span></div>
+  <div class="row"><label>Model</label><input type="text" id="GEMINI_MODEL" placeholder="gemini-3.8-flash"></div>
 </div>
 
 <div class="section">
-<h2>Ollama (Local Fallback)</h2>
-<div class="row"><label>URL</label><input type="text" id="OLLAMA_URL" value="http://127.0.0.1:11434"></div>
-<div class="row"><label>Model</label><input type="text" id="OLLAMA_MODEL" value="qwen2.5:7b"></div>
-<div class="row"><label>Vision Model</label><input type="text" id="OLLAMA_VISION_MODEL" placeholder="Optional"></div>
-<div class="row"><label>Context Length</label><input type="number" id="OLLAMA_NUM_CTX" value="16384"></div>
+  <h2>OpenRouter (Cloud AI)</h2>
+  <div class="row">
+    <label>API Key</label>
+    <input type="password" id="OPENROUTER_API_KEY" placeholder="sk-or-..." autocomplete="off">
+    <button type="button" class="btn btn-secondary btn-small" data-reveal="OPENROUTER_API_KEY">Show</button>
+  </div>
+  <div class="row"><label>Model</label><input type="text" id="OPENROUTER_MODEL" placeholder="deepseek/deepseek-v4.1-flash"></div>
+  <div class="row"><label>Vision Model</label><input type="text" id="OPENROUTER_VISION_MODEL" placeholder="Optional"></div>
+  <div class="row"><label><input type="checkbox" id="OPENROUTER_WEB_ENABLED"> Enable OpenRouter Web Plugin (billed per search)</label></div>
 </div>
 
 <div class="section">
-<h2>Behaviour</h2>
-<div class="row"><label><input type="checkbox" id="AUTO_SUBMIT" checked> Auto-Submit when done</label></div>
-<div class="row"><label><input type="checkbox" id="AUTO_CLICK_NEXT" checked> Auto-Click Next</label></div>
-<div class="row"><label><input type="checkbox" id="AUTO_REATTEMPT"> Auto-Reattempt</label></div>
-<div class="row"><label>Scan Interval (ms)</label><input type="number" id="SCAN_INTERVAL" value="300"></div>
+  <h2>Ollama (Local Fallback)</h2>
+  <div class="row"><label>URL</label><input type="text" id="OLLAMA_URL" placeholder="http://127.0.0.1:11434"></div>
+  <div class="row"><label>Model</label><input type="text" id="OLLAMA_MODEL" placeholder="qwen2.5:7b"></div>
+  <div class="row"><label>Vision Model</label><input type="text" id="OLLAMA_VISION_MODEL" placeholder="Optional"></div>
+  <div class="row"><label>Context Length</label><input type="number" id="OLLAMA_NUM_CTX"></div>
 </div>
 
 <div class="section">
-<h2>Features</h2>
-<div class="row"><label><input type="checkbox" id="ANSWER_KEY_ENABLED" checked> Answer Key (amauoed.com)</label></div>
-<div class="row"><label><input type="checkbox" id="WEB_SEARCH_ENABLED" checked> Web Search</label></div>
-<div class="row"><label><input type="checkbox" id="SHORT_ANSWER_ENABLED" checked> Short Answer</label></div>
-<div class="row"><label><input type="checkbox" id="MULTI_ENABLED" checked> Multi-Answer</label></div>
-<div class="row"><label><input type="checkbox" id="MATCHING_ENABLED" checked> Matching</label></div>
-<div class="row"><label><input type="checkbox" id="VISION_ENABLED" checked> Vision</label></div>
+  <h2>Behaviour &amp; Limits</h2>
+  <div class="row"><label><input type="checkbox" id="AUTO_SUBMIT"> Auto-Submit on summary page</label></div>
+  <div class="row"><label><input type="checkbox" id="AUTO_CLICK_NEXT"> Auto-Click Next</label></div>
+  <div class="row"><label><input type="checkbox" id="AUTO_REATTEMPT"> Auto-Reattempt on quiz view page</label></div>
+  <div class="row"><label>Scan Interval (ms)</label><input type="number" id="SCAN_INTERVAL"></div>
+  <div class="row"><label>Manual Wait Timeout (s)</label><input type="number" id="MANUAL_TIMEOUT"></div>
+  <div class="row"><label>Max Runtime (hours)</label><input type="number" id="MAX_RUN_HOURS" step="0.5"></div>
+  <div class="row"><label>Max Vision Images / Q</label><input type="number" id="MAX_QUESTION_IMAGES" min="0" max="5"></div>
+  <div class="row"><label>Web Search Domains</label><input type="text" id="WEB_SEARCH_DOMAINS" placeholder="amauoed.com,studocu.com,coursehero.com,docsity.com"></div>
+</div>
+
+<div class="section">
+  <h2>Features</h2>
+  <div class="row"><label><input type="checkbox" id="ANSWER_KEY_ENABLED"> Answer Key (amauoed.com)</label></div>
+  <div class="row"><label><input type="checkbox" id="WEB_SEARCH_ENABLED"> Web Search</label></div>
+  <div class="row"><label><input type="checkbox" id="SHORT_ANSWER_ENABLED"> Short Answer</label></div>
+  <div class="row"><label><input type="checkbox" id="MULTI_ENABLED"> Multi-Answer</label></div>
+  <div class="row"><label><input type="checkbox" id="MATCHING_ENABLED"> Matching</label></div>
+  <div class="row"><label><input type="checkbox" id="VISION_ENABLED"> Vision</label></div>
 </div>
 
 <div class="save-row">
   <button class="btn" id="saveBtn">Save Settings</button>
+  <button class="btn btn-secondary" id="testProvidersBtn">Test AI Providers</button>
   <span id="save-status" aria-live="polite"></span>
 </div>
+<div id="providerTestResults" aria-live="polite"></div>
+
 <div class="section">
-<h2>Local Answer Bank</h2>
-<p id="answerBankCount" aria-live="polite">Stored questions: loading...</p>
-<button class="btn" id="exportQuestionBankBtn">Export Answer Bank (.json)</button>
-<button class="btn" id="importQuestionBankBtn">Import Answer Bank (.json)</button>
-<input type="file" id="importQuestionBankFile" accept="application/json,.json" hidden>
+  <h2>Local Answer Bank &amp; Manager</h2>
+  <p id="answerBankCount" aria-live="polite">Stored questions: loading...</p>
+  <div class="row">
+    <button class="btn" id="exportQuestionBankBtn">Export Answer Bank (.json)</button>
+    <button class="btn" id="importQuestionBankBtn">Import Answer Bank (.json)</button>
+    <button class="btn btn-secondary" id="clearWrongCacheBtn">Clear Wrong Cache</button>
+    <input type="file" id="importQuestionBankFile" accept="application/json,.json" hidden>
+  </div>
+  <div class="row" style="margin-top: 10px;">
+    <input type="text" id="bankSearchInput" placeholder="Search banked questions, answers, or course tags...">
+    <button type="button" class="btn btn-secondary" id="bankSearchBtn">Search</button>
+  </div>
+  <div id="bankResults"></div>
 </div>
 <div id="status"></div>
 
@@ -141,8 +176,12 @@ h1 { color: #e94560; font-size: 18px; margin-bottom: 16px; }
   <h2>GitHub Question Bank (Live Sync)</h2>
   <div class="row"><label>Repository Owner</label><input type="text" id="GITHUB_BANK_OWNER" placeholder="owner"></div>
   <div class="row"><label>Repository Name</label><input type="text" id="GITHUB_BANK_REPO" name="repo"></div>
-  <div class="row"><label>Bank Path (default: bank.json)</label><input type="text" id="GITHUB_BANK_PATH" value="bank.json"></div>
-  <div class="row"><label>Sync Token (leave empty for private repo with token auth)</label><input type="password" id="GITHUB_SYNC_TOKEN" placeholder="ghp_... or leave empty"></div>
+  <div class="row"><label>Bank Path (default: bank.json)</label><input type="text" id="GITHUB_BANK_PATH" placeholder="bank.json"></div>
+  <div class="row">
+    <label>Sync Token (PAT with contents scope)</label>
+    <input type="password" id="GITHUB_SYNC_TOKEN" placeholder="ghp_... or leave empty" autocomplete="off">
+    <button type="button" class="btn btn-secondary btn-small" data-reveal="GITHUB_SYNC_TOKEN">Show</button>
+  </div>
   <button class="btn" id="syncNowBtn">Sync Now</button>
   <div id="syncStatus" style="margin-top: 8px; font-size: 12px; color: #888;"></div>
 </div>

@@ -1,0 +1,15 @@
+{
+  "name": "moodle-quiz-bot",
+  "version": "3.7.0",
+  "description": "Manifest V3 browser extension and Tampermonkey userscript for Moodle quiz automation, Q&A harvesting, and GitHub bank syncing.",
+  "private": true,
+  "scripts": {
+    "build:userscript": "node build-userscript.js",
+    "check": "node -e \"const fs=require('node:fs'),cp=require('node:child_process');for(const f of fs.readdirSync('.').filter(x=>x.endsWith('.js'))){cp.execFileSync(process.execPath,['--check',f],{stdio:'inherit'});}console.log('All JS syntax checks passed.');\"",
+    "test": "node --test tests/*.test.js",
+    "verify": "npm run build:userscript && npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,16 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  popup.js — the one-click Enable / Disable switch.
-//
-//  BOT_ENABLED is written to chrome.storage.local (content.js,
-//  universal-harvester.js and mascot.js all watch that area, so every open tab
-//  hides its HUD / harvester panel / pixel cat the moment the switch flips, no
-//  page reload needed) and mirrored to chrome.storage.sync, which is where
-//  config.js keeps its canonical settings copy.
+//  popup.js — Enable/Disable toggle, on-demand tab harvester injection,
+//  side panel launcher, and Options shortcut.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const toggleButton = document.getElementById('toggleBtn');
+const harvestTabButton = document.getElementById('harvestTabBtn');
+const logButton = document.getElementById('logBtn');
+const optionsButton = document.getElementById('optionsBtn');
+const statusEl = document.getElementById('popupStatus');
 
-// Local first (instant switch), sync as the config.js fallback.
+function setPopupStatus(text, isError = false) {
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.style.color = isError ? '#f87171' : '#4ade80';
+}
+
 async function readEnabled() {
   try {
     const local = await chrome.storage.local.get('BOT_ENABLED');
@@ -20,12 +24,10 @@ async function readEnabled() {
     const sync = await chrome.storage.sync.get('BOT_ENABLED');
     return !sync || sync.BOT_ENABLED !== false;
   } catch (error) {
-    return true; // storage unavailable: behave like the default (enabled)
+    return true;
   }
 }
 
-// Save cleanly: both areas, local first so the live listeners fire right away.
-// A failed .sync write (quota, sync disabled) never blocks the toggle.
 async function writeEnabled(enabled) {
   await chrome.storage.local.set({ BOT_ENABLED: enabled });
   try {
@@ -47,19 +49,61 @@ function render(enabled) {
 
 toggleButton.addEventListener('click', async () => {
   const next = !(await readEnabled());
-  render(next);                                  // optimistic: the UI reacts instantly
+  render(next);
   toggleButton.disabled = true;
   try {
     await writeEnabled(next);
   } catch (error) {
-    render(!next);                               // roll back on a hard failure
-    toggleButton.title = 'Could not save: ' + (error && error.message ? error.message : error);
+    render(!next);
+    setPopupStatus('Could not save: ' + (error && error.message ? error.message : error), true);
   } finally {
     toggleButton.disabled = false;
   }
 });
 
-// Stay in step if the value changes elsewhere (options page, another popup).
+// On-demand harvester injection for any non-study tab (uses activeTab + scripting).
+if (harvestTabButton) {
+  harvestTabButton.addEventListener('click', async () => {
+    harvestTabButton.disabled = true;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== 'number') {
+        setPopupStatus('No active tab found.', true);
+        return;
+      }
+      if (!/^https?:\/\//i.test(String(tab.url || ''))) {
+        setPopupStatus('Cannot inject on browser internal pages.', true);
+        return;
+      }
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['config.js', 'storage.js', 'universal-harvester.js'],
+      });
+      setPopupStatus('Harvester opened on this tab.');
+    } catch (error) {
+      setPopupStatus('Inject failed: ' + (error && error.message ? error.message : error), true);
+    } finally {
+      harvestTabButton.disabled = false;
+    }
+  });
+}
+
+if (logButton) {
+  logButton.addEventListener('click', async () => {
+    try {
+      const win = await chrome.windows.getCurrent();
+      if (chrome.sidePanel && typeof chrome.sidePanel.open === 'function' && win && typeof win.id === 'number') {
+        await chrome.sidePanel.open({ windowId: win.id });
+        window.close();
+      } else {
+        setPopupStatus('Side panel not supported in this browser.', true);
+      }
+    } catch (error) {
+      setPopupStatus('Could not open side panel: ' + error.message, true);
+    }
+  });
+}
+
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' && area !== 'sync') return;
@@ -67,9 +111,9 @@ try {
     const value = changes.BOT_ENABLED.newValue;
     render(value === undefined ? true : value);
   });
-} catch (error) { /* storage events unavailable in this context */ }
+} catch (error) { /* storage events unavailable */ }
 
-document.getElementById('optionsBtn').addEventListener('click', () => {
+optionsButton.addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
 

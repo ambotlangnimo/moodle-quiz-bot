@@ -1,28 +1,65 @@
 {
   "manifest_version": 3,
   "name": "Moodle Quiz Bot",
-  "version": "3.6.0",
-  "description": "Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot on every site.",
+  "version": "3.7.0",
+  "description": "Moodle quiz bot + universal Q&A harvester with a pure-JS pixel-art cat mascot.",
   "permissions": [
     "storage",
     "tabs",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "alarms",
+    "sidePanel",
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://*.amaes.com/*",
+    "https://amauoed.com/*",
+    "https://*.amauoed.com/*",
+    "https://api.github.com/*",
+    "https://raw.githubusercontent.com/*",
+    "https://api.freellmapi.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://openrouter.ai/*",
+    "https://html.duckduckgo.com/*",
+    "https://en.wikipedia.org/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "content_scripts": [
     {
       "matches": ["https://*.amaes.com/*"],
-      "css": ["hud.css"],
       "js": ["config.js", "storage.js", "providers.js", "content.js", "mascot.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["<all_urls>"],
-      "exclude_matches": ["https://*.amaes.com/*"],
-      "css": ["hud.css"],
+      "matches": [
+        "https://amauoed.com/*",
+        "https://*.amauoed.com/*",
+        "https://quizlet.com/*",
+        "https://*.quizlet.com/*",
+        "https://studocu.com/*",
+        "https://*.studocu.com/*",
+        "https://brainly.ph/*",
+        "https://*.brainly.ph/*",
+        "https://brainly.com/*",
+        "https://*.brainly.com/*",
+        "https://coursehero.com/*",
+        "https://*.coursehero.com/*",
+        "https://scribd.com/*",
+        "https://*.scribd.com/*",
+        "https://chegg.com/*",
+        "https://*.chegg.com/*",
+        "https://bartleby.com/*",
+        "https://*.bartleby.com/*",
+        "https://numerade.com/*",
+        "https://*.numerade.com/*"
+      ],
       "js": ["config.js", "storage.js", "universal-harvester.js", "mascot.js"],
       "run_at": "document_idle",
       "all_frames": false
@@ -30,12 +67,15 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["hud.css"],
+      "resources": ["hud.css", "default_bank.json"],
       "matches": ["<all_urls>"]
     }
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "options_page": "options.html",
   "action": {

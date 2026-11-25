@@ -31,6 +31,7 @@ try {
 
     /* ── Configuration ──────────────────────────────────────────────────── */
 
+    const HUD_HOST_ID = 'qb-harvester-host';
     const HUD_ID = 'qb-hud';
     const LOG_ID = 'qb-log';
     const STATUS_ID = 'qb-status';
@@ -150,6 +151,8 @@ try {
 
     /* ── State ──────────────────────────────────────────────────────────── */
 
+    let hudHost = null;
+    let hudShadow = null;
     let hudEl = null;
     let logEl = null;
     let statusEl = null;
@@ -321,9 +324,16 @@ try {
       } catch (error) { /* console may be unavailable */ }
     }
 
-    // mascot.js tees this function when it boots; keeping the same global name
-    // as content.js means the 7-cat reacts to HUD output on every site.
+    // mascot.js tees window.logHUD when it boots; route calls through emitLog so
+    // the mascot observes harvester output even inside the closed Shadow DOM.
     window.logHUD = logHUD;
+    function emitLog(level, text) {
+      if (typeof window.logHUD === 'function' && window.logHUD !== logHUD) {
+        window.logHUD(level, text);
+        return;
+      }
+      emitLog(level, text);
+    }
 
     function setStatus(text, className) {
       if (!statusEl) return;
@@ -356,11 +366,9 @@ try {
       } catch (error) { done(true); }
     }
 
-    // Show/hide the panel with an inline display: #qb-hud is a flex column, so
-    // restoring with 'flex' keeps the expanded panel and the 🐾 pill identical.
     function setPanelVisible(visible) {
-      if (!hudEl) return;
-      hudEl.style.display = visible ? 'flex' : 'none';
+      if (hudHost) hudHost.style.display = visible ? 'block' : 'none';
+      if (hudEl) hudEl.style.display = visible ? 'flex' : 'none';
     }
 
     function applyBotEnabled(enabled) {
@@ -376,13 +384,13 @@ try {
           }
           setBusy(false);
           setStatus('stopped', 'stopped');
-          logHUD('warn', changed ? 'Bot stopped — disabled from the popup.' : 'Bot stopped.');
+          emitLog('warn', changed ? 'Bot stopped — disabled from the popup.' : 'Bot stopped.');
         }
         setPanelVisible(false);
         return;
       }
       setPanelVisible(true);
-      if (changed) logHUD('info', 'Bot enabled — harvester ready.');
+      if (changed) emitLog('info', 'Bot enabled — harvester ready.');
     }
 
     function watchBotEnabled() {
@@ -433,14 +441,21 @@ try {
     }
 
     function buildHud() {
-      const existing = document.getElementById(HUD_ID);
-      if (existing) {
-        hudEl = existing;
-        logEl = existing.querySelector('#' + LOG_ID);
-        statusEl = existing.querySelector('#' + STATUS_ID);
+      const existingHost = document.getElementById(HUD_HOST_ID);
+      if (existingHost && hudEl) {
         setPanelVisible(botEnabled);
         return;
       }
+
+      hudHost = existingHost || document.createElement('div');
+      hudHost.id = HUD_HOST_ID;
+      hudHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+      hudShadow = hudHost.shadowRoot || hudHost.attachShadow({ mode: 'closed' });
+      const style = document.createElement('style');
+      try {
+        fetch(chrome.runtime.getURL('hud.css')).then((r) => r.text()).then((css) => { style.textContent = css; }).catch(() => {});
+      } catch (error) { /* ignore */ }
+      hudShadow.appendChild(style);
 
       const hud = document.createElement('div');
       hud.id = HUD_ID;
@@ -494,10 +509,14 @@ try {
       actions.append(pageBtn, courseBtn, stopBtn);
       hud.append(header, body, actions);
 
-      const anchor = document.body || document.documentElement;
-      anchor.appendChild(hud);
+      hudShadow.appendChild(hud);
+      if (!hudHost.isConnected) {
+        const anchor = document.body || document.documentElement;
+        anchor.appendChild(hudHost);
+      }
 
       hudEl = hud;
+      window.__qbHarvesterHeader = header;
       bindHudEvents(header);
       setCollapsed(!isStudyHost());
       refreshCourseButton();
@@ -579,12 +598,12 @@ try {
     function requestStop() {
       if (!busy) {
         setStatus('idle', '');
-        logHUD('info', 'Idle — nothing is running.');
+        emitLog('info', 'Idle — nothing is running.');
         return;
       }
       stopRequested = true;
       setStatus('stopping', 'waiting');
-      logHUD('warn', 'Stop requested — halting harvest.');
+      emitLog('warn', 'Stop requested — halting harvest.');
       if (abortController) {
         try { abortController.abort(); } catch (error) { /* already aborted */ }
       }
@@ -998,7 +1017,7 @@ try {
           if (pair.verified) verified += 1;
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('error', 'Bank write failed: ' + message);
+          emitLog('error', 'Bank write failed: ' + message);
         }
       }
 
@@ -1007,7 +1026,7 @@ try {
           if (typeof flushNow === 'function') await flushNow();
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('warn', 'Bank flush failed: ' + message);
+          emitLog('warn', 'Bank flush failed: ' + message);
         }
       }
 
@@ -1017,20 +1036,20 @@ try {
     function requestGitHubBankPush() {
       safeSendMessage({ action: 'SYNC_GITHUB_BANK' }, (response, error) => {
         if (error) {
-          logHUD('warn', 'GitHub bank sync unavailable: ' + error);
+          emitLog('warn', 'GitHub bank sync unavailable: ' + error);
           return;
         }
         if (!response) return;
         if (response.error) {
-          logHUD('warn', 'GitHub bank sync failed: ' + response.error);
+          emitLog('warn', 'GitHub bank sync failed: ' + response.error);
           return;
         }
         if (response.status === 'skipped') {
-          logHUD('info', 'GitHub bank not configured — pairs stay in the local bank.');
+          emitLog('info', 'GitHub bank not configured — pairs stay in the local bank.');
           return;
         }
         if (response.status === 'ok') {
-          logHUD('success', 'GitHub bank pushed (' + (response.pushed || 0) + ' questions).');
+          emitLog('success', 'GitHub bank pushed (' + (response.pushed || 0) + ' questions).');
         }
       });
     }
@@ -1048,11 +1067,11 @@ try {
 
     async function harvestPage() {
       if (!botEnabled) {
-        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        emitLog('warn', 'Bot is disabled — enable it in the popup to harvest.');
         return;
       }
       if (busy) {
-        logHUD('warn', 'Harvest is already running.');
+        emitLog('warn', 'Harvest is already running.');
         return;
       }
       if (!hudEl) buildHud();
@@ -1062,7 +1081,7 @@ try {
       stopRequested = false;
       setBusy(true);
       setStatus('harvesting', 'running');
-      logHUD('info', 'Harvest "' + host + '" — reading this page…');
+      emitLog('info', 'Harvest "' + host + '" — reading this page…');
       // Give the mascot's log observer a frame to see the start line.
       await delay(80);
 
@@ -1083,31 +1102,31 @@ try {
 
         if (!pairs.length) {
           setStatus('empty', 'waiting');
-          logHUD('warn', 'Harvesting failed: no Q&A pairs found — highlight a Q&A block or open a study page.');
+          emitLog('warn', 'Harvesting failed: no Q&A pairs found — highlight a Q&A block or open a study page.');
           return;
         }
 
-        logHUD('info', 'Harvest "' + host + '" — ' + pairs.length + ' candidate pair(s) from ' + strategy + '.');
+        emitLog('info', 'Harvest "' + host + '" — ' + pairs.length + ' candidate pair(s) from ' + strategy + '.');
         await delay(40);
 
         const result = await persistPairs(pairs, host);
         if (!result.saved) {
           setStatus('empty', 'waiting');
-          logHUD('warn', 'Harvesting failed: nothing new to store on this page.');
+          emitLog('warn', 'Harvesting failed: nothing new to store on this page.');
           return;
         }
 
         setStatus('done', 'reviewing');
         const savedLabel = result.saved === 1 ? 'answer' : 'answers';
-        logHUD('success', 'Harvested ' + result.saved + ' ' + savedLabel + ' from ' + host + '!');
+        emitLog('success', 'Harvested ' + result.saved + ' ' + savedLabel + ' from ' + host + '!');
         await delay(900);
-        logHUD('info', 'Review page: ' + result.saved + ' pairs ready in the local bank.');
+        emitLog('info', 'Review page: ' + result.saved + ' pairs ready in the local bank.');
         requestGitHubBankPush();
         scheduleIdleStatus(runId);
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         setStatus('stopped', 'stopped');
-        logHUD('error', 'Harvesting failed: ' + message);
+        emitLog('error', 'Harvesting failed: ' + message);
       } finally {
         setBusy(false);
       }
@@ -1200,15 +1219,15 @@ try {
 
     async function harvestCourse() {
       if (!botEnabled) {
-        logHUD('warn', 'Bot is disabled — enable it in the popup to harvest.');
+        emitLog('warn', 'Bot is disabled — enable it in the popup to harvest.');
         return;
       }
       if (busy) {
-        logHUD('warn', 'Harvest is already running.');
+        emitLog('warn', 'Harvest is already running.');
         return;
       }
       if (!courseHarvestAvailable()) {
-        logHUD('warn', 'Course harvest needs a course page or a paginated page.');
+        emitLog('warn', 'Course harvest needs a course page or a paginated page.');
         return;
       }
       if (!hudEl) buildHud();
@@ -1219,7 +1238,7 @@ try {
       stopRequested = false;
       setBusy(true);
       setStatus('harvesting', 'running');
-      logHUD('info', 'Harvest "' + host + '" — course mode, starting at ?page=1…');
+      emitLog('info', 'Harvest "' + host + '" — course mode, starting at ?page=1…');
       await delay(80);
 
       const seenPairs = new Set();
@@ -1245,10 +1264,10 @@ try {
             const message = error && error.message ? error.message : String(error);
             // First page fallback: harvest what is already open in the tab.
             if (page === 1) {
-              logHUD('warn', 'Harvest "' + host + '" — ?page=1 fetch failed (' + message + '), using the open tab.');
+              emitLog('warn', 'Harvest "' + host + '" — ?page=1 fetch failed (' + message + '), using the open tab.');
               pagePairs = extractPagePairsFromDom();
             } else {
-              logHUD('warn', 'Harvest "' + host + '" — ?page=' + page + ' failed: ' + message);
+              emitLog('warn', 'Harvest "' + host + '" — ?page=' + page + ' failed: ' + message);
               break;
             }
           }
@@ -1257,13 +1276,13 @@ try {
 
           const fresh = pagePairs.filter((pair) => !seenPairs.has(pairSignature(pair)));
           if (!fresh.length) {
-            logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ' has no new pairs.');
+            emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ' has no new pairs.');
             break;
           }
 
           const signature = fresh.map(pairSignature).join('|');
           if (signature === lastSignature) {
-            logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ' repeats the previous page.');
+            emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ' repeats the previous page.');
             break;
           }
           lastSignature = signature;
@@ -1274,13 +1293,13 @@ try {
           verifiedTotal += result.verified;
           pagesRead += 1;
 
-          logHUD('info', 'Harvest "' + host + '" — ?page=' + page + ': +' + result.saved + ' pair(s) stored.');
+          emitLog('info', 'Harvest "' + host + '" — ?page=' + page + ': +' + result.saved + ' pair(s) stored.');
           await delay(120);
         }
 
         if (!savedTotal) {
           setStatus(stopRequested ? 'stopped' : 'empty', stopRequested ? 'stopped' : 'waiting');
-          logHUD('warn', stopRequested
+          emitLog('warn', stopRequested
             ? 'Bot stopped — nothing stored.'
             : 'Harvesting failed: nothing new to store across the course.');
           return;
@@ -1290,20 +1309,20 @@ try {
           if (typeof flushNow === 'function') await flushNow();
         } catch (error) {
           const message = error && error.message ? error.message : String(error);
-          logHUD('warn', 'Bank flush failed: ' + message);
+          emitLog('warn', 'Bank flush failed: ' + message);
         }
 
         setStatus(stopRequested ? 'stopped' : 'done', stopRequested ? 'stopped' : 'reviewing');
         const savedLabel = savedTotal === 1 ? 'answer' : 'answers';
-        logHUD('success', 'Harvested ' + savedTotal + ' ' + savedLabel + ' from ' + host + '!');
+        emitLog('success', 'Harvested ' + savedTotal + ' ' + savedLabel + ' from ' + host + '!');
         await delay(900);
 
         if (stopRequested) {
-          logHUD('warn', 'Bot stopped — ' + savedTotal + ' pair(s) kept from ' + pagesRead + ' page(s).');
+          emitLog('warn', 'Bot stopped — ' + savedTotal + ' pair(s) kept from ' + pagesRead + ' page(s).');
         } else {
-          logHUD('info', 'Review page: ' + savedTotal + ' pairs ready in the local bank.');
-          if (verifiedTotal) logHUD('info', 'Verified this run: ' + verifiedTotal + ' pair(s).');
-          if (pagesRead >= MAX_COURSE_PAGES) logHUD('warn', 'Course page limit reached (' + MAX_COURSE_PAGES + ').');
+          emitLog('info', 'Review page: ' + savedTotal + ' pairs ready in the local bank.');
+          if (verifiedTotal) emitLog('info', 'Verified this run: ' + verifiedTotal + ' pair(s).');
+          if (pagesRead >= MAX_COURSE_PAGES) emitLog('warn', 'Course page limit reached (' + MAX_COURSE_PAGES + ').');
         }
 
         requestGitHubBankPush();
@@ -1311,7 +1330,7 @@ try {
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         setStatus('stopped', 'stopped');
-        logHUD('error', 'Harvesting failed: ' + message);
+        emitLog('error', 'Harvesting failed: ' + message);
       } finally {
         setBusy(false);
       }
@@ -1320,10 +1339,10 @@ try {
     /* ── Boot ───────────────────────────────────────────────────────────── */
 
     function ensureMounted() {
-      if (!hudEl) return;
-      if (!hudEl.isConnected) {
+      if (!hudHost) return;
+      if (!hudHost.isConnected) {
         try {
-          (document.body || document.documentElement).appendChild(hudEl);
+          (document.body || document.documentElement).appendChild(hudHost);
         } catch (error) { /* page may be tearing down */ }
       }
       refreshCourseButton();
@@ -1331,12 +1350,12 @@ try {
 
     function init() {
       try {
-        if (document.getElementById(HUD_ID)) return;
+        if (document.getElementById(HUD_HOST_ID)) return;
         buildHud();
         watchBotEnabled();
-        logHUD('info', 'Ready on ' + (currentHost() || 'this page') + ' — highlight text or use Harvest Page.');
+        emitLog('info', 'Ready on ' + (currentHost() || 'this page') + ' — highlight text or use Harvest Page.');
         if (hasPagination()) {
-          logHUD('info', 'Paginated page detected — Harvest Course can walk ?page=1, 2, 3…');
+          emitLog('info', 'Paginated page detected — Harvest Course can walk ?page=1, 2, 3…');
         }
         window.setInterval(ensureMounted, 5000);
         window.addEventListener('beforeunload', () => {
@@ -1348,6 +1367,8 @@ try {
         try { console.warn('[Harvest] init failed:', error); } catch (ignore) { /* ignore */ }
       }
     }
+
+    window.__qbHarvesterInternals = { parseHighlightedSelection, makePair, cleanQuestion, cleanAnswer, extractAmauoed, extractQuizlet };
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', init, { once: true });

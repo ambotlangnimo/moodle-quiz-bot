@@ -3,20 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <style>
-body { width: 200px; font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 12px; }
-h2 { font-size: 14px; color: #e94560; margin: 0 0 8px; text-align: center; }
-.btn { width: 100%; padding: 6px; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+body { width: 220px; font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 12px; }
+h2 { font-size: 14px; color: #e94560; margin: 0 0 10px; text-align: center; }
+.btn { width: 100%; padding: 7px 8px; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; margin-bottom: 6px; }
 #toggleBtn { background: #2563eb; color: white; }
 #toggleBtn.active { background: #059669; }
-#toggleBtn:hover { opacity: 0.85; }
-#optionsBtn { background: #374151; color: #d1d5db; }
-#optionsBtn:hover { background: #4b5563; }
+#toggleBtn:hover, .btn:hover { opacity: 0.9; }
+#harvestTabBtn { background: #0f766e; color: white; }
+#logBtn { background: #1e3a5f; color: #cbd5e1; }
+#optionsBtn { background: #374151; color: #d1d5db; margin-bottom: 0; }
+#popupStatus { font-size: 11px; color: #94a3b8; margin-top: 6px; min-height: 14px; text-align: center; }
 </style>
 </head>
 <body>
 <h2>Moodle Quiz Bot</h2>
 <button class="btn" id="toggleBtn">Enable</button>
-<button class="btn" id="optionsBtn">Options</button>
+<button class="btn" id="harvestTabBtn" title="Inject the Q&amp;A harvester on the current tab">Harvest This Tab</button>
+<button class="btn" id="logBtn" title="Open the live log side panel">Open Log Panel</button>
+<button class="btn" id="optionsBtn">Options &amp; Bank Manager</button>
+<div id="popupStatus" aria-live="polite"></div>
 <script src="popup.js"></script>
 </body>
 </html>
